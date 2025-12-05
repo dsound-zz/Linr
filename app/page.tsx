@@ -23,7 +23,7 @@ export default function HomePage() {
 
       if (data.error) throw new Error(data.error);
 
-      setResults(data);
+      setResults(data.results);
 
       // auto-select if only one
       if (data.length === 1) {
@@ -59,21 +59,26 @@ export default function HomePage() {
       <h1 className="text-3xl font-bold mb-6 text-center">Linr</h1>
 
       {/* Search Bar */}
-      <form onSubmit={handleSearch} className="flex gap-2 mb-6">
-        <input
-          type="text"
-          placeholder="Search for a song..."
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          className="flex-1 px-4 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-        <button
-          type="submit"
-          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-        >
-          Search
-        </button>
-      </form>
+      <div className="flex flex-col mb-6">
+        <form onSubmit={handleSearch} className="flex gap-2 mb-2">
+          <input
+            type="text"
+            placeholder="Search for a song..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="flex-1 px-4 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <button
+            type="submit"
+            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+          >
+            Search
+          </button>
+        </form>
+        <p className="text-xs text-gray-500 mt-2">
+          Tip: Add an artist name for better results (“1984 The Killers”)
+        </p>
+      </div>
 
       {/* Loading */}
       {loading && (

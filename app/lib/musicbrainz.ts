@@ -1,6 +1,7 @@
 // lib/musicbrainz.ts
 import { MusicBrainzApi } from "musicbrainz-api";
 import type { SearchResultItem } from "./types";
+import { logMusicBrainzResponse } from "./logger";
 
 let cachedClient: MusicBrainzApi | null = null;
 
@@ -17,7 +18,7 @@ export function getMBClient(): MusicBrainzApi {
 }
 
 // Helper: turn artist-credit array into a human string
-function formatArtistCredit(recording: any): string {
+export function formatArtistCredit(recording: any): string {
   const ac = recording["artist-credit"] ?? recording.artistCredit ?? [];
   if (!Array.isArray(ac)) return "";
   return ac
@@ -30,14 +31,17 @@ function formatArtistCredit(recording: any): string {
     .join("");
 }
 
-export async function searchRecordingsByTitle(
+export async function searchGlobalRecordings(
   query: string,
-  limit = 10
+  limit = 50
 ): Promise<SearchResultItem[]> {
   const mb = getMBClient();
 
   // @musicbrainz/api returns an object with `recordings`
   const result = await mb.search("recording", { query, limit });
+
+  // Log the raw response before processing
+  await logMusicBrainzResponse("search", result, query);
 
   const recordings: any[] = result.recordings ?? [];
 
@@ -83,5 +87,39 @@ export async function lookupRecording(id: string): Promise<any> {
     "isrcs",
   ]);
 
+  // Log the raw response before returning
+  await logMusicBrainzResponse("lookup", recording, undefined, id);
+
   return recording;
+}
+
+export async function searchArtistByName(name: string) {
+  const mb = getMBClient();
+
+  const result = await mb.search("artist", { query: name, limit: 5 });
+
+  // Log the raw response before processing
+  await logMusicBrainzResponse("search", result, name);
+
+  const artists = result.artists || [];
+
+  if (artists.length === 0) return null;
+
+  // pick the highest score
+  return artists[0];
+}
+
+export async function searchRecordingsByTitleForArtist(
+  title: string,
+  artistId: string
+) {
+  const mb = getMBClient();
+
+  const query = `${title} AND arid:${artistId}`;
+  const result = await mb.search("recording", { query, limit: 25 });
+
+  // Log the raw response before processing
+  await logMusicBrainzResponse("search", result, query);
+
+  return result.recordings || [];
 }
