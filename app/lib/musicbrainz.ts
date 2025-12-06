@@ -33,17 +33,32 @@ export function formatArtistCredit(recording: any): string {
 
 export async function searchGlobalRecordings(
   query: string,
-  limit = 50
+  totalLimit = 200
 ): Promise<SearchResultItem[]> {
   const mb = getMBClient();
 
-  // @musicbrainz/api returns an object with `recordings`
-  const result = await mb.search("recording", { query, limit });
+  const recordings: any[] = [];
+  const pageSize = 25; // MB search max
+  for (
+    let offset = 0;
+    offset < totalLimit && recordings.length < totalLimit;
+    offset += pageSize
+  ) {
+    const result = await mb.search("recording", {
+      query,
+      limit: pageSize,
+      offset,
+    });
 
-  // Log the raw response before processing
-  await logMusicBrainzResponse("search", result, query);
+    // Log only the first page to keep logs smaller
+    if (offset === 0) {
+      await logMusicBrainzResponse("search", result, query);
+    }
 
-  const recordings: any[] = result.recordings ?? [];
+    recordings.push(...(result.recordings ?? []));
+
+    if (!result.recordings || result.recordings.length < pageSize) break;
+  }
 
   return recordings.map((rec: any): SearchResultItem => {
     const id = rec.id ?? rec["id"] ?? rec["mbid"];
@@ -71,6 +86,126 @@ export async function searchGlobalRecordings(
       releaseTitle,
       year,
       score,
+      releases: rec.releases, // Preserve releases array for filtering
+    };
+  });
+}
+
+export async function searchRecordingsByExactTitle(
+  title: string,
+  totalLimit = 200
+): Promise<SearchResultItem[]> {
+  const mb = getMBClient();
+  const query = `recording:"${title}"`;
+
+  const recordings: any[] = [];
+  const pageSize = 25;
+  for (
+    let offset = 0;
+    offset < totalLimit && recordings.length < totalLimit;
+    offset += pageSize
+  ) {
+    const result = await mb.search("recording", {
+      query,
+      limit: pageSize,
+      offset,
+    });
+
+    if (offset === 0) {
+      await logMusicBrainzResponse("search", result, query);
+    }
+
+    recordings.push(...(result.recordings ?? []));
+
+    if (!result.recordings || result.recordings.length < pageSize) break;
+  }
+
+  return recordings.map((rec: any): SearchResultItem => {
+    const id = rec.id ?? rec["id"] ?? rec["mbid"];
+    const artist = formatArtistCredit(rec);
+    const primaryRelease =
+      Array.isArray(rec.releases) && rec.releases.length > 0
+        ? rec.releases[0]
+        : null;
+
+    const releaseTitle = primaryRelease?.title ?? null;
+    const date: string | null = primaryRelease?.date ?? null;
+    const year = date ? date.slice(0, 4) : null;
+
+    const score =
+      typeof rec.score === "number"
+        ? rec.score
+        : rec["ext:score"]
+        ? Number(rec["ext:score"])
+        : null;
+
+    return {
+      id,
+      title: rec.title,
+      artist,
+      releaseTitle,
+      year,
+      score,
+      releases: rec.releases,
+    };
+  });
+}
+
+export async function searchRecordingsByExactTitleNoRepeats(
+  title: string,
+  totalLimit = 200
+): Promise<SearchResultItem[]> {
+  const mb = getMBClient();
+  const query = `recording:"${title}" AND NOT recording:"${title} ${title}"`;
+  const recordings: any[] = [];
+  const pageSize = 25;
+  for (
+    let offset = 0;
+    offset < totalLimit && recordings.length < totalLimit;
+    offset += pageSize
+  ) {
+    const result = await mb.search("recording", {
+      query,
+      limit: pageSize,
+      offset,
+    });
+
+    if (offset === 0) {
+      await logMusicBrainzResponse("search", result, query);
+    }
+
+    recordings.push(...(result.recordings ?? []));
+
+    if (!result.recordings || result.recordings.length < pageSize) break;
+  }
+
+  return recordings.map((rec: any): SearchResultItem => {
+    const id = rec.id ?? rec["id"] ?? rec["mbid"];
+    const artist = formatArtistCredit(rec);
+    const primaryRelease =
+      Array.isArray(rec.releases) && rec.releases.length > 0
+        ? rec.releases[0]
+        : null;
+
+    const releaseTitle = primaryRelease?.title ?? null;
+    const date: string | null = primaryRelease?.date ?? null;
+    const year = date ? date.slice(0, 4) : null;
+
+    const score =
+      typeof rec.score === "number"
+        ? rec.score
+        : rec["ext:score"]
+        ? Number(rec["ext:score"])
+        : null;
+
+    return {
+      id,
+      title: rec.title,
+      artist,
+      releaseTitle,
+      year,
+      score,
+      releases: rec.releases,
     };
   });
 }
@@ -119,6 +254,20 @@ export async function searchRecordingsByTitleForArtist(
   const result = await mb.search("recording", { query, limit: 25 });
 
   // Log the raw response before processing
+  await logMusicBrainzResponse("search", result, query);
+
+  return result.recordings || [];
+}
+
+export async function searchRecordingsByTitleAndArtistName(
+  title: string,
+  artistName: string,
+  limit = 50
+) {
+  const mb = getMBClient();
+  const query = `recording:"${title}" AND artist:"${artistName}"`;
+  const result = await mb.search("recording", { query, limit });
+
   await logMusicBrainzResponse("search", result, query);
 
   return result.recordings || [];

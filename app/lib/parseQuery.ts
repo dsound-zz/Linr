@@ -1,32 +1,20 @@
-export function parseUserQuery(input: string): {
-  title: string;
-  artist: string | null;
-} {
-  const q = input.trim();
+export function parseUserQuery(q: string) {
+  const parts = q.trim().split(/\s+/);
 
-  // If user typed only 1 word → it's a title
-  if (q.split(" ").length === 1) {
-    return { title: q, artist: null };
+  // If only one word, it's just a title
+  if (parts.length === 1) {
+    return { title: q.trim(), artist: null };
   }
 
-  const words = q.split(" ");
+  // If multiple words:
+  // Assume last 2 words might be the artist
+  // "jump van halen" → title="jump", artist="van halen"
+  // "jump michael jackson" → title="jump", artist="michael jackson"
+  const lastTwo = parts.slice(-2).join(" ");
+  const first = parts.slice(0, -2).join(" ");
 
-  // Try last two words as artist
-  const possibleArtist = words.slice(-2).join(" ");
-  const titleGuess = words.slice(0, -2).join(" ");
-
-  // Very lightweight check:
-  // If removing last 2 words leaves something meaningful → treat as (title, artist)
-  if (titleGuess.length >= 2) {
-    return {
-      title: titleGuess,
-      artist: possibleArtist,
-    };
-  }
-
-  // Fallback: treat whole thing as title
   return {
-    title: q,
-    artist: null,
+    title: first || q.trim(), // fallback
+    artist: lastTwo,
   };
 }

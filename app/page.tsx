@@ -21,14 +21,17 @@ export default function HomePage() {
       const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
       const data = await res.json();
 
+      console.log('[FRONTEND] Received response:', data);
+      console.log('[FRONTEND] data.results:', data.results);
+
       if (data.error) throw new Error(data.error);
 
-      setResults(data.results);
+      // Handle both response formats: { results: [...] } or { result: ... }
+      const resultsArray = data.results || (data.result ? [data.result] : []);
+      console.log('[FRONTEND] Results array:', resultsArray);
+      console.log('[FRONTEND] Results array length:', resultsArray.length);
 
-      // auto-select if only one
-      if (data.length === 1) {
-        handleSelect(data[0].id);
-      }
+      setResults(resultsArray);
     } catch (err: any) {
       setError(err.message || "Search failed");
     } finally {
@@ -76,7 +79,7 @@ export default function HomePage() {
           </button>
         </form>
         <p className="text-xs text-gray-500 mt-2">
-          Tip: Add an artist name for better results (“1984 The Killers”)
+          Tip: Add an artist name for better results (“Jump Van Halen")
         </p>
       </div>
 
@@ -91,9 +94,11 @@ export default function HomePage() {
       )}
 
       {/* Search Results */}
-      {!selected && results.length > 1 && (
+      {!selected && results?.length > 0 && (
         <div className="space-y-3">
-          <h2 className="text-lg font-semibold">Select a recording:</h2>
+          <h2 className="text-lg font-semibold">
+            {results.length === 1 ? "1 recording found:" : "Select a recording:"}
+          </h2>
 
           {results.map((item) => (
             <button

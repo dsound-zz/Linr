@@ -29,4 +29,5 @@ export interface SearchResultItem {
   releaseTitle: string | null;
   year: string | null;
   score: number | null;
+  releases?: any[]; // optional raw releases array from MusicBrainz
 }
