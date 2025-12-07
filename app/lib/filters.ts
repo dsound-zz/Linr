@@ -1,6 +1,7 @@
 // 1. Filter out live, remaster, remix, DJ mix, demo, karaoke, etc
 export function isLikelyStudioVersion(rec: any): boolean {
   const dis = rec.disambiguation?.toLowerCase() ?? "";
+  const title = rec.title?.toLowerCase() ?? "";
   const releaseContext = (rec.releases ?? [])
     .map(
       (r: any) =>
@@ -11,7 +12,7 @@ export function isLikelyStudioVersion(rec: any): boolean {
     .join(" ")
     .toLowerCase();
 
-  const haystack = `${dis} ${releaseContext}`;
+  const haystack = `${title} ${dis} ${releaseContext}`;
 
   const badKeywords = [
     "live",
@@ -27,9 +28,14 @@ export function isLikelyStudioVersion(rec: any): boolean {
     "tribute",
     "cover",
     "alternate",
+    "acoustic",
+    "voice memo",
+    "memo",
     "extended",
     "club",
     "dance",
+    "track by track",
+    "commentary",
     "house",
     "radio edit",
     "mastermix",
@@ -37,6 +43,10 @@ export function isLikelyStudioVersion(rec: any): boolean {
     "12-inch",
     "sped up",
     "sped",
+    "explicit version",
+    "clean version",
+    "taylor's version",
+    "re-recording",
     "80s", // catches “Best of the 80s”, “80s Collection”
     "90s", // future-proof
     "2000s",
@@ -114,7 +124,8 @@ export function isOriginalAlbumRelease(release: any): boolean {
 }
 // Filter out releases whose titles clearly indicate a compilation
 export function isNotCompilationTitle(release: any): boolean {
-  const title = release?.title?.toLowerCase() ?? "";
+  const rawTitle = release?.title?.toLowerCase() ?? "";
+  const title = rawTitle.replace(/[()\\[\\]]/g, " ");
 
   const badTitleKeywords = [
     "greatest",
@@ -134,9 +145,56 @@ export function isNotCompilationTitle(release: any): boolean {
     "90s",
     "2000s",
     "compilation",
+    "(instrumental)"
   ];
 
-  return !badTitleKeywords.some((kw) => title.includes(kw));
+  return !badTitleKeywords.some(
+    (kw) => title.includes(kw) || rawTitle.includes(kw)
+  );
+}
+
+// Release-level filter to drop obvious remixes/alt versions even if the recording slips through
+export function isStudioReleaseTitle(release: any): boolean {
+  const rawHaystack = `${release?.title ?? ""} ${release?.disambiguation ?? ""}`
+    .toLowerCase();
+  const haystack = rawHaystack.replace(/[()\\[\\]]/g, " ");
+
+  const badTitleKeywords = [
+    "remix",
+    "mix",
+    "acoustic",
+    "instrumental",
+    "commentary",
+    "track by track",
+    "voice memo",
+    "demo",
+    "karaoke",
+    "clean version",
+    "explicit version",
+    "sped up",
+    "sped",
+    "taylor's version",
+    "re-recording",
+    "orchestral",
+    "symphonic",
+  ];
+
+  const secondary =
+    (release?.["release-group"]?.["secondary-types"] ?? []).map((s: string) =>
+      s.toLowerCase()
+    );
+
+  if (
+    secondary.some((t: string) =>
+      ["live", "remix", "dj-mix", "mixtape", "compilation"].includes(t)
+    )
+  ) {
+    return false;
+  }
+
+  return !badTitleKeywords.some(
+    (kw) => haystack.includes(kw) || rawHaystack.includes(kw)
+  );
 }
 
 export function recordingTitleMatchesQuery(

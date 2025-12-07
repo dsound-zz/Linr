@@ -26,8 +26,8 @@ export interface SearchResultItem {
   id: string; // recording MBID
   title: string;
   artist: string;
-  releaseTitle: string | null;
   year: string | null;
   score: number | null;
+  durationMs?: number | null;
   releases?: any[]; // optional raw releases array from MusicBrainz
 }

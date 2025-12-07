@@ -68,7 +68,6 @@ export async function searchGlobalRecordings(
         ? rec.releases[0]
         : null;
 
-    const releaseTitle = primaryRelease?.title ?? null;
     const date: string | null = primaryRelease?.date ?? null;
     const year = date ? date.slice(0, 4) : null;
 
@@ -83,9 +82,9 @@ export async function searchGlobalRecordings(
       id,
       title: rec.title,
       artist,
-      releaseTitle,
       year,
       score,
+      durationMs: rec.length ?? null,
       releases: rec.releases, // Preserve releases array for filtering
     };
   });
@@ -128,7 +127,6 @@ export async function searchRecordingsByExactTitle(
         ? rec.releases[0]
         : null;
 
-    const releaseTitle = primaryRelease?.title ?? null;
     const date: string | null = primaryRelease?.date ?? null;
     const year = date ? date.slice(0, 4) : null;
 
@@ -143,9 +141,9 @@ export async function searchRecordingsByExactTitle(
       id,
       title: rec.title,
       artist,
-      releaseTitle,
       year,
       score,
+      durationMs: rec.length ?? null,
       releases: rec.releases,
     };
   });
@@ -187,7 +185,6 @@ export async function searchRecordingsByExactTitleNoRepeats(
         ? rec.releases[0]
         : null;
 
-    const releaseTitle = primaryRelease?.title ?? null;
     const date: string | null = primaryRelease?.date ?? null;
     const year = date ? date.slice(0, 4) : null;
 
@@ -202,9 +199,9 @@ export async function searchRecordingsByExactTitleNoRepeats(
       id,
       title: rec.title,
       artist,
-      releaseTitle,
       year,
       score,
+      durationMs: rec.length ?? null,
       releases: rec.releases,
     };
   });

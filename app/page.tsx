@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { SearchResultItem, NormalizedRecording } from "@/lib/types";
 
+
 export default function HomePage() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResultItem[]>([]);
@@ -79,7 +80,7 @@ export default function HomePage() {
           </button>
         </form>
         <p className="text-xs text-gray-500 mt-2">
-          Tip: Add an artist name for better results (“Jump Van Halen")
+          Tip: Add an artist with "by" or "-" for tighter matches (e.g. "Jump by Van Halen")
         </p>
       </div>
 
@@ -100,21 +101,24 @@ export default function HomePage() {
             {results.length === 1 ? "1 recording found:" : "Select a recording:"}
           </h2>
 
-          {results.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => handleSelect(item.id)}
-              className="w-full text-left border p-3 rounded-md hover:bg-gray-50"
-            >
-              <div className="font-semibold">{item.title}</div>
-              <div className="text-gray-600">{item.artist}</div>
-              {item.releaseTitle && (
-                <div className="text-gray-400 text-sm">
-                  {item.releaseTitle} ({item.year})
-                </div>
-              )}
-            </button>
-          ))}
+          {results.map((item) => {
+            console.log(item)
+            return (
+              <button
+                key={item.id}
+                onClick={() => handleSelect(item.id)}
+                className="w-full text-left border p-3 rounded-md hover:bg-gray-50"
+              >
+                <div className="font-semibold">{item.title}</div>
+                <div className="text-gray-600">{item.artist}</div>
+                {item.year && (
+                  <div className="text-gray-400 text-sm">
+                    Released {item.year}
+                  </div>
+                )}
+              </button>
+            )
+          })}
         </div>
       )}
 

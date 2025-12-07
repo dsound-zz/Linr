@@ -12,10 +12,6 @@ export function normalizeSearchRecording(rec: any) {
       ? rec.releases[0]
       : null;
 
-  // Release title
-  const releaseTitle =
-    primaryRelease?.title ?? rec["first-release-date"] ?? null;
-
   // Year
   const date = primaryRelease?.date ?? rec["first-release-date"] ?? null;
 
@@ -34,7 +30,6 @@ export function normalizeSearchRecording(rec: any) {
     title: rec.title ?? null,
     artist,
     year,
-    releaseTitle,
     durationMs: rec.length ?? null,
     score,
   };
