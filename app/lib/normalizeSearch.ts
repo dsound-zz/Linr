@@ -1,6 +1,7 @@
 import { formatArtistCredit } from "./musicbrainz";
+import type { MusicBrainzRecording, SearchResultItem } from "./types";
 
-export function normalizeSearchRecording(rec: any) {
+export function normalizeSearchRecording(rec: MusicBrainzRecording | SearchResultItem) {
   const id = rec.id;
 
   // Handle both raw recordings (with artist-credit) and SearchResultItem (with artist string)

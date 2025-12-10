@@ -1,4 +1,6 @@
-export function NORMALIZE_RECORDING_TEMPLATE(raw: any): string {
+import type { MusicBrainzRecording } from "./types";
+
+export function NORMALIZE_RECORDING_TEMPLATE(raw: MusicBrainzRecording): string {
   return `
 You are a metadata normalizer. Convert this raw MusicBrainz JSON into a clean structure.
 

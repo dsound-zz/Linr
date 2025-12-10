@@ -1,14 +1,13 @@
 import OpenAI from "openai";
 import { NORMALIZE_RECORDING_TEMPLATE } from "./prompts";
-import type { NormalizedRecording } from "./types";
-import type { SearchResultItem } from "./types";
+import type { NormalizedRecording, SearchResultItem, MusicBrainzRecording } from "./types";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 const client = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 export async function normalizeRecording(
-  raw: any
+  raw: MusicBrainzRecording
 ): Promise<NormalizedRecording> {
   const prompt = NORMALIZE_RECORDING_TEMPLATE(raw);
 
@@ -114,7 +113,7 @@ Given a song title, guess up to ${limit} likely mainstream artists who have a we
       return parsed.slice(0, limit).map((s) => String(s));
     }
     if (Array.isArray(parsed.artists)) {
-      return parsed.artists.slice(0, limit).map((s: any) => String(s));
+      return parsed.artists.slice(0, limit).map((s: unknown) => String(s));
     }
     return [];
   } catch (err) {

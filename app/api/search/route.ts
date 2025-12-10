@@ -7,8 +7,7 @@ import {
   isStudioReleaseTitle,
   titleMatchesQuery,
   scoreRecordingMatch,
-  isRepeatedSingleWordTitle,
-  isRepeatedTitleValue,
+  isRepeatedSingleWordTitle
 } from "@/lib/filters";
 
 import {
@@ -24,8 +23,21 @@ import { normalizeSearchRecording } from "@/lib/normalizeSearch";
 import { parseUserQuery } from "@/lib/parseQuery";
 import { NextResponse } from "next/server";
 import { rerankSearchResults, inferLikelyArtists } from "@/lib/openai";
+import type { MusicBrainzRecording, SearchResultItem } from "@/lib/types";
 
-function cleanRecordingReleases(rec: any) {
+// Helper to convert SearchResultItem to MusicBrainzRecording
+function toMusicBrainzRecording(item: SearchResultItem): MusicBrainzRecording {
+  return {
+    id: item.id,
+    title: item.title ?? undefined,
+    score: item.score ?? undefined,
+    length: item.durationMs ?? undefined,
+    releases: item.releases,
+    artist: item.artist,
+  };
+}
+
+function cleanRecordingReleases(rec: MusicBrainzRecording): MusicBrainzRecording | null {
   if (!Array.isArray(rec.releases)) return rec;
 
   const original = rec.releases;
@@ -46,7 +58,7 @@ function cleanRecordingReleases(rec: any) {
   return { ...rec, releases: r };
 }
 
-function cleanRecording(rec: any, title: string, artist?: string | null) {
+function cleanRecording(rec: MusicBrainzRecording, title: string, artist?: string | null): MusicBrainzRecording | null {
   if (artist && !recordingMatchesArtist(rec, artist)) return null;
   if (!isLikelyStudioVersion(rec)) return null;
   if (!titleMatchesQuery(rec, title)) return null;
@@ -58,7 +70,7 @@ function cleanRecording(rec: any, title: string, artist?: string | null) {
 }
 
 function rankAndNormalize(
-  recordings: any[],
+  recordings: MusicBrainzRecording[],
   userTitle: string,
   userArtist?: string | null,
   limit = 5
@@ -73,12 +85,20 @@ function rankAndNormalize(
     .map(({ rec }) => normalizeSearchRecording(rec));
 }
 
-function logSampleTitles(label: string, recs: any[], limit = 8) {
+function logSampleTitles(
+  label: string,
+  recs: (MusicBrainzRecording | SearchResultItem | ReturnType<typeof normalizeSearchRecording>)[],
+  limit = 8
+) {
   const titles = recs.slice(0, limit).map((r) => r.title);
   console.log(`[DEBUG][${label}] count=${recs.length} sample=`, titles);
 }
 
-function logSampleBrief(label: string, recs: any[], limit = 8) {
+function logSampleBrief(
+  label: string,
+  recs: (MusicBrainzRecording | SearchResultItem | ReturnType<typeof normalizeSearchRecording>)[],
+  limit = 8
+) {
   const sample = recs.slice(0, limit).map((r) => {
     const artist = getArtistName(r);
     return `${r.title ?? "(no title)"} — ${artist || "(no artist)"}`;
@@ -97,8 +117,8 @@ function normalizeText(val: string | null | undefined): string {
 function keepEarliestPerTitleArtist(
   items: ReturnType<typeof normalizeSearchRecording>[]
 ) {
-  const key = (item: any) =>
-    `${normalizeText(item.title)}::${normalizeText(item.artist)}`;
+  const key = (item: ReturnType<typeof normalizeSearchRecording>) =>
+    `${normalizeText(item.title ?? "")}::${normalizeText(item.artist ?? "")}`;
 
   const best = new Map<
     string,
@@ -107,7 +127,8 @@ function keepEarliestPerTitleArtist(
 
   items.forEach((item) => {
     const k = key(item);
-    const y = parseInt(item.year ?? item.release?.date?.slice(0, 4));
+    // item.year is already a 4-character string (e.g., "2023") or null from normalizeSearchRecording
+    const y = item.year ? parseInt(item.year) : NaN;
     const year = isNaN(y) ? Infinity : y;
 
     const existing = best.get(k);
@@ -149,11 +170,14 @@ function preferDominantArtist(
   const top = ranked[0];
   const next = ranked[1];
 
-  if (!top || top.count < minCount) return items;
+  if (!top) return items;
+  if (top.count < minCount) return items;
   const nextCount = next?.count ?? 0;
 
+  // top is guaranteed to exist and have count >= minCount after the checks above
+  const topArtist = top as { count: number; artist: string };
   const bestArtistKey = normalizeText(bestScoreItem.artist);
-  const topKey = normalizeText(top.artist);
+  const topKey = normalizeText(topArtist.artist);
 
   // Only collapse if the dominant artist is also the best-scoring artist
   if (
@@ -249,13 +273,13 @@ function forcePreferred(
   return deduped.slice(0, limit);
 }
 
-function getArtistName(rec: any): string {
-  if (rec.artist) return rec.artist;
+function getArtistName(rec: MusicBrainzRecording | SearchResultItem): string {
+  if ("artist" in rec && rec.artist) return rec.artist;
 
-  const ac = rec["artist-credit"];
+  const ac = "artist-credit" in rec ? rec["artist-credit"] : undefined;
   if (Array.isArray(ac)) {
     return ac
-      .map((entry: any) => {
+      .map((entry) => {
         if (typeof entry === "string") return entry;
         return entry?.artist?.name ?? entry?.name ?? "";
       })
@@ -266,7 +290,7 @@ function getArtistName(rec: any): string {
   return "";
 }
 
-function extractTopArtists(recs: any[], title: string, limit = 3): string[] {
+function extractTopArtists(recs: (MusicBrainzRecording | SearchResultItem)[], title: string, limit = 3): string[] {
   const bucket = new Map<
     string,
     { count: number; maxScore: number; artist: string }
@@ -276,16 +300,23 @@ function extractTopArtists(recs: any[], title: string, limit = 3): string[] {
     const artist = getArtistName(rec);
     if (!artist) return;
 
+    // Convert SearchResultItem to MusicBrainzRecording if needed
+    // Convert SearchResultItem to MusicBrainzRecording if needed
+    const mbRec: MusicBrainzRecording =
+      "year" in rec && typeof rec.id === "string" && rec.id !== undefined
+        ? toMusicBrainzRecording(rec as SearchResultItem)
+        : rec as MusicBrainzRecording;
+
     const titleMatch =
       normalizeText(rec.title) === normalizeText(title) ||
-      titleMatchesQuery(rec, title);
+      titleMatchesQuery(mbRec, title);
     if (!titleMatch) return;
 
     const raw =
       typeof rec.score === "number"
         ? rec.score
-        : rec["ext:score"]
-        ? Number(rec["ext:score"])
+        : "ext:score" in mbRec && mbRec["ext:score"]
+        ? Number(mbRec["ext:score"])
         : 0;
 
     const key = artist.toLowerCase();
@@ -332,7 +363,7 @@ export async function GET(req: Request) {
 
       let filtered = scoped
         .map((rec) => cleanRecording(rec, title, artistMatch.name))
-        .filter(Boolean) as any[];
+        .filter((rec): rec is MusicBrainzRecording => rec !== null);
 
       logSampleTitles("SCOPED filtered", filtered);
 
@@ -391,8 +422,8 @@ export async function GET(req: Request) {
   let preferredPool: ReturnType<typeof normalizeSearchRecording>[] = [];
 
   let filtered = global
-    .map((rec) => cleanRecording(rec, title))
-    .filter(Boolean) as any[];
+    .map((rec) => cleanRecording(toMusicBrainzRecording(rec), title))
+    .filter((rec): rec is MusicBrainzRecording => rec !== null);
 
   logSampleTitles("GLOBAL filtered", filtered);
 
@@ -404,9 +435,9 @@ export async function GET(req: Request) {
       `[GLOBAL] Filters removed everything — falling back to unfiltered global results`
     );
     const titleOnly = global
-      .map((rec) => cleanRecording(rec, title))
-      .filter(Boolean) as any[];
-    filtered = titleOnly.length > 0 ? titleOnly : global;
+      .map((rec) => cleanRecording(toMusicBrainzRecording(rec), title))
+      .filter((rec): rec is MusicBrainzRecording => rec !== null);
+    filtered = titleOnly.length > 0 ? titleOnly : global.map(toMusicBrainzRecording);
     logSampleTitles("GLOBAL fallback", filtered);
   }
 
@@ -441,11 +472,11 @@ export async function GET(req: Request) {
     console.log(
       `[GLOBAL] Normalized list empty after repeated-title filter — falling back to title-only ranking`
     );
-    const titleOnly = global.filter((rec) => titleMatchesQuery(rec, title));
+    const titleOnly = global.filter((rec) => titleMatchesQuery(toMusicBrainzRecording(rec), title));
     const pool =
       titleOnly.length > 0 ? titleOnly : global;
 
-    normalized = rankAndNormalize(pool, title, null, 5);
+    normalized = rankAndNormalize(pool.map(toMusicBrainzRecording), title, null, 5);
   }
 
   // If we still have no strong exact-title match, run exact-title queries and merge
@@ -453,8 +484,8 @@ export async function GET(req: Request) {
     normalized.some((n) => normalizeText(n.title) === normalizeText(title)) ||
     false;
 
-  let exactResults: any[] = [];
-  let exactNoRepeatResults: any[] = [];
+  let exactResults: MusicBrainzRecording[] = [];
+  let exactNoRepeatResults: MusicBrainzRecording[] = [];
 
   if (!hasExact) {
     const [exact, exactNoRepeats] = await Promise.all([
@@ -467,11 +498,11 @@ export async function GET(req: Request) {
     logSampleBrief("GLOBAL exact-title no-repeats raw brief", exactNoRepeats);
 
     exactResults = exact
-      .map((rec) => cleanRecording(rec, title))
-      .filter(Boolean) as any[];
+      .map((rec) => cleanRecording(toMusicBrainzRecording(rec), title))
+      .filter((rec): rec is MusicBrainzRecording => rec !== null);
     exactNoRepeatResults = exactNoRepeats
-      .map((rec) => cleanRecording(rec, title))
-      .filter(Boolean) as any[];
+      .map((rec) => cleanRecording(toMusicBrainzRecording(rec), title))
+      .filter((rec): rec is MusicBrainzRecording => rec !== null);
 
     const exactNormalized = rankAndNormalize(
       exactResults,
@@ -532,8 +563,8 @@ export async function GET(req: Request) {
       const targetedNormalized = targeted
         .flat()
         .map((rec) => cleanRecording(rec, title))
-        .filter(Boolean)
-        .map((rec: any) =>
+        .filter((rec): rec is MusicBrainzRecording => rec !== null)
+        .map((rec) =>
           normalizeSearchRecording({
             ...rec,
             artist: getArtistName(rec),
@@ -573,8 +604,8 @@ export async function GET(req: Request) {
       const targetedNormalized = targeted
         .flat()
         .map((rec) => cleanRecording(rec, title))
-        .filter(Boolean)
-        .map((rec: any) =>
+        .filter((rec): rec is MusicBrainzRecording => rec !== null)
+        .map((rec) =>
           normalizeSearchRecording({
             ...rec,
             artist: getArtistName(rec),
@@ -630,11 +661,30 @@ export async function GET(req: Request) {
   // LLM rerank to boost the most obvious matches
   try {
     const preRerank = normalized.slice();
-    const before = normalized.slice(0, 40);
+    const before: SearchResultItem[] = normalized
+      .slice(0, 40)
+      .filter((item) => typeof item.id === "string" && item.id !== "")
+      .map((item) => ({
+        id: item.id as string,
+        title: item.title ?? "",
+        artist: item.artist ?? "",
+        year: item.year,
+        score: item.score,
+        durationMs: item.durationMs,
+      }));
     const reranked = await rerankSearchResults(before, q);
     if (reranked && reranked.length) {
       const seen = new Set<string>();
-      normalized = reranked
+      // Convert reranked SearchResultItem[] back to normalized format to match normalized type
+      const rerankedNormalized: ReturnType<typeof normalizeSearchRecording>[] = reranked.map((item) => ({
+        id: item.id,
+        title: item.title ?? null,
+        artist: item.artist ?? "",
+        year: item.year,
+        score: item.score,
+        durationMs: item.durationMs ?? null,
+      }));
+      normalized = rerankedNormalized
         .concat(normalized)
         .filter((item) => {
           if (!item.id) return true;

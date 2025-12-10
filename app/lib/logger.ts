@@ -1,6 +1,7 @@
 // lib/logger.ts
 import { writeFile, mkdir } from "fs/promises";
 import { join } from "path";
+import type { MusicBrainzSearchResponse, MusicBrainzRecording } from "./types";
 
 const LOGS_DIR = join(process.cwd(), "logs");
 const MUSICBRAINZ_LOG_FILE = join(LOGS_DIR, "musicbrainz.jsonl");
@@ -10,7 +11,7 @@ interface MusicBrainzLogEntry {
   endpoint: "search" | "lookup";
   query?: string; // for search
   id?: string; // for lookup
-  rawResponse: any;
+  rawResponse: MusicBrainzSearchResponse | MusicBrainzRecording;
 }
 
 /**
@@ -32,7 +33,7 @@ async function ensureLogsDir(): Promise<void> {
  */
 export async function logMusicBrainzResponse(
   endpoint: "search" | "lookup",
-  rawResponse: any,
+  rawResponse: MusicBrainzSearchResponse | MusicBrainzRecording,
   query?: string,
   id?: string
 ): Promise<void> {

@@ -1,6 +1,7 @@
 import { formatArtistCredit } from "./musicbrainz"; // make sure it's exported
+import type { MusicBrainzRecording } from "./types";
 
-export function normalizeRecording(rec: any) {
+export function normalizeRecording(rec: MusicBrainzRecording) {
   const id = rec.id;
 
   const artist = formatArtistCredit(rec);

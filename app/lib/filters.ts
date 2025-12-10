@@ -1,10 +1,12 @@
 // 1. Filter out live, remaster, remix, DJ mix, demo, karaoke, etc
-export function isLikelyStudioVersion(rec: any): boolean {
+import type { MusicBrainzRecording, MusicBrainzRelease, MusicBrainzArtistCreditEntry } from "./types";
+
+export function isLikelyStudioVersion(rec: MusicBrainzRecording): boolean {
   const dis = rec.disambiguation?.toLowerCase() ?? "";
   const title = rec.title?.toLowerCase() ?? "";
   const releaseContext = (rec.releases ?? [])
     .map(
-      (r: any) =>
+      (r: MusicBrainzRelease) =>
         `${r.disambiguation ?? ""} ${r.title ?? ""} ${
           r["release-group"]?.["secondary-types"]?.join(" ") ?? ""
         }`
@@ -52,7 +54,7 @@ export function isLikelyStudioVersion(rec: any): boolean {
     "2000s",
   ];
 
-  const hasBadSecondaryType = (rec.releases ?? []).some((r: any) => {
+  const hasBadSecondaryType = (rec.releases ?? []).some((r: MusicBrainzRelease) => {
     const secondary =
       (r["release-group"]?.["secondary-types"] ?? []).map((s: string) =>
         s.toLowerCase()
@@ -68,11 +70,12 @@ export function isLikelyStudioVersion(rec: any): boolean {
 }
 
 // 2. Artist matching stays the same for now
-export function recordingMatchesArtist(rec: any, artistName: string): boolean {
+
+export function recordingMatchesArtist(rec: MusicBrainzRecording, artistName: string): boolean {
   const ac = rec["artist-credit"] ?? [];
   const target = artistName.toLowerCase().trim();
 
-  return ac.some((entry: any) => {
+  return ac.some((entry: MusicBrainzArtistCreditEntry | string) => {
     const n =
       entry?.artist?.name ??
       entry?.name ??
@@ -97,13 +100,13 @@ export function recordingMatchesArtist(rec: any, artistName: string): boolean {
 }
 
 // 3. Prefer US releases, fallback to anything
-export function recordingHasUSRelease(rec: any): boolean {
+export function recordingHasUSRelease(rec: MusicBrainzRecording): boolean {
   const releases = rec.releases ?? [];
-  return releases.some((r: any) => r.country === "US");
+  return releases.some((r: MusicBrainzRelease) => r.country === "US");
 }
 
 // Prefer original album releases over compilations, singles, etc
-export function isOriginalAlbumRelease(release: any): boolean {
+export function isOriginalAlbumRelease(release: MusicBrainzRelease): boolean {
   const rg = release["release-group"];
   if (!rg) return false;
 
@@ -123,7 +126,7 @@ export function isOriginalAlbumRelease(release: any): boolean {
   return true;
 }
 // Filter out releases whose titles clearly indicate a compilation
-export function isNotCompilationTitle(release: any): boolean {
+export function isNotCompilationTitle(release: MusicBrainzRelease): boolean {
   const rawTitle = release?.title?.toLowerCase() ?? "";
   const title = rawTitle.replace(/[()\\[\\]]/g, " ");
 
@@ -154,7 +157,7 @@ export function isNotCompilationTitle(release: any): boolean {
 }
 
 // Release-level filter to drop obvious remixes/alt versions even if the recording slips through
-export function isStudioReleaseTitle(release: any): boolean {
+export function isStudioReleaseTitle(release: MusicBrainzRelease): boolean {
   const rawHaystack = `${release?.title ?? ""} ${release?.disambiguation ?? ""}`
     .toLowerCase();
   const haystack = rawHaystack.replace(/[()\\[\\]]/g, " ");
@@ -198,7 +201,7 @@ export function isStudioReleaseTitle(release: any): boolean {
 }
 
 export function recordingTitleMatchesQuery(
-  rec: any,
+  rec: MusicBrainzRecording,
   userTitle: string
 ): boolean {
   const recTitle = rec.title?.toLowerCase() ?? "";
@@ -223,7 +226,7 @@ export function recordingTitleMatchesQuery(
   return recTitle.includes(cleanUser);
 }
 
-export function titleMatchesQuery(rec: any, userTitle: string): boolean {
+export function titleMatchesQuery(rec: MusicBrainzRecording, userTitle: string): boolean {
   const recTitle = normalize(rec.title);
   const q = normalize(userTitle);
 
@@ -237,7 +240,7 @@ export function titleMatchesQuery(rec: any, userTitle: string): boolean {
 }
 
 export function isRepeatedSingleWordTitle(
-  rec: any,
+  rec: MusicBrainzRecording | { title?: string | null } | { title: string | null },
   userTitle: string
 ): boolean {
   return false;
@@ -251,7 +254,7 @@ export function isRepeatedTitleValue(
 }
 
 export function scoreRecordingMatch(
-  rec: any,
+  rec: MusicBrainzRecording,
   userTitle: string,
   userArtist?: string | null
 ): number {
@@ -297,7 +300,7 @@ export function scoreRecordingMatch(
 
   const year =
     releases
-      .map((r: any) => parseInt(r.date?.slice(0, 4)))
+      .map((r: MusicBrainzRelease) => parseInt(r.date?.slice(0, 4) ?? ""))
       .filter((y: number) => !isNaN(y))
       .sort((a: number, b: number) => a - b)[0] ?? null;
 

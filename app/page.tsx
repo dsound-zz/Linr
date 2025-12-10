@@ -33,8 +33,8 @@ export default function HomePage() {
       console.log('[FRONTEND] Results array length:', resultsArray.length);
 
       setResults(resultsArray);
-    } catch (err: any) {
-      setError(err.message || "Search failed");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Search failed");
     } finally {
       setLoading(false);
     }
@@ -51,8 +51,8 @@ export default function HomePage() {
       if (data.error) throw new Error(data.error);
 
       setSelected(data);
-    } catch (err: any) {
-      setError(err.message || "Failed to load recording");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load recording");
     } finally {
       setLoading(false);
     }
