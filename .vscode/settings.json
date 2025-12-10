@@ -15,7 +15,7 @@
     }
   },
   "[typescript]": {
-    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.defaultFormatter": "trunk.io",
     "editor.formatOnSave": true
   },
   "[typescriptreact]": {

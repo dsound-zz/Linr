@@ -102,7 +102,6 @@ export default function HomePage() {
           </h2>
 
           {results.map((item) => {
-            console.log(item)
             return (
               <button
                 key={item.id}
@@ -132,9 +131,9 @@ export default function HomePage() {
             {selected.release?.title} — {selected.release?.date}
           </div>
 
-          <h3 className="font-semibold mt-4">Credits</h3>
+          <h3 className="font-semibold mt-4">Selected Recording</h3>
           <pre className="bg-gray-100 p-3 rounded-md text-black text-sm overflow-x-auto">
-            {JSON.stringify(selected.credits, null, 2)}
+            {JSON.stringify(selected, null, 2)}
           </pre>
         </div>
       )}
