@@ -23,6 +23,7 @@ import { normalizeSearchRecording } from "@/lib/normalizeSearch";
 import { parseUserQuery } from "@/lib/parseQuery";
 import { NextResponse } from "next/server";
 import { rerankSearchResults, inferLikelyArtists } from "@/lib/openai";
+import { searchWikipediaTrack } from "@/lib/wikipedia";
 import type { MusicBrainzRecording, SearchResultItem } from "@/lib/types";
 
 // Helper to convert SearchResultItem to MusicBrainzRecording
@@ -114,6 +115,33 @@ function normalizeText(val: string | null | undefined): string {
     .trim();
 }
 
+function isTitleTrackOnSelfTitledRelease(rec: any, userTitle: string): boolean {
+  const target = normalizeText(userTitle);
+  if (!target) return false;
+
+  const releases = rec?.releases ?? [];
+
+  return releases.some((r: any) => {
+    const relTitle = normalizeText(r?.title);
+    const rgTitle = normalizeText(r?.["release-group"]?.title);
+    return relTitle === target || rgTitle === target;
+  });
+}
+
+function buildSelfTitledBoost(
+  recs: any[],
+  userTitle: string
+): ReturnType<typeof normalizeSearchRecording>[] {
+  return recs
+    .filter((rec) => isTitleTrackOnSelfTitledRelease(rec, userTitle))
+    .map((rec) =>
+      normalizeSearchRecording({
+        ...rec,
+        artist: getArtistName(rec),
+      })
+    );
+}
+
 function keepEarliestPerTitleArtist(
   items: ReturnType<typeof normalizeSearchRecording>[]
 ) {
@@ -143,7 +171,8 @@ function keepEarliestPerTitleArtist(
 function preferDominantArtist(
   items: ReturnType<typeof normalizeSearchRecording>[],
   minCount = 2,
-  dominanceRatio = 2
+  dominanceRatio = 2,
+  pinnedArtists?: Set<string>
 ) {
   if (items.length === 0) return items;
 
@@ -181,6 +210,7 @@ function preferDominantArtist(
 
   // Only collapse if the dominant artist is also the best-scoring artist
   if (
+    (!pinnedArtists || pinnedArtists.has(topKey)) &&
     (nextCount === 0 || top.count >= dominanceRatio * nextCount) &&
     topKey === bestArtistKey
   ) {
@@ -464,8 +494,28 @@ export async function GET(req: Request) {
     }
   }
 
+  // Boost self-titled album/track matches (e.g., Quincy Jones - The Dude on “The Dude”)
+  const selfTitledBoost = buildSelfTitledBoost(pool, title);
+  // Also capture self-titled matches from the unfiltered global set to reinsert if they were filtered out
+  const selfTitledFromRaw = buildSelfTitledBoost(global, title);
+  const allSelfTitled = [...selfTitledBoost, ...selfTitledFromRaw];
+  const pinnedIds = new Set(allSelfTitled.map((item) => item.id).filter(Boolean));
+  const pinnedArtists = new Set(
+    allSelfTitled.map((item) => normalizeText(item.artist)).filter(Boolean)
+  );
+
   let normalized = rankAndNormalize(pool, title, null, 5);
-  preferredPool = preferredPool.concat(normalized);
+  preferredPool = preferredPool.concat(normalized, allSelfTitled);
+
+  if (allSelfTitled.length) {
+    const seen = new Set<string>();
+    normalized = [...allSelfTitled, ...normalized].filter((item) => {
+      if (!item.id) return true;
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+  }
 
   // If everything got filtered, fall back to a minimal title-only ranking
   if (normalized.length === 0) {
@@ -634,7 +684,12 @@ export async function GET(req: Request) {
   // If one artist clearly dominates the matches, collapse to that artist (covers/alt artists drop)
   if (!artist) {
     const before = normalized.length;
-    normalized = preferDominantArtist(normalized);
+    normalized = preferDominantArtist(
+      normalized,
+      undefined,
+      undefined,
+      pinnedArtists
+    );
     if (normalized.length !== before) {
       logSampleTitles("GLOBAL dominant-artist collapse", normalized);
       logSampleBrief("GLOBAL dominant-artist collapse brief", normalized);
@@ -711,11 +766,50 @@ export async function GET(req: Request) {
       logSampleTitles("GLOBAL reranked with preferred", normalized);
       logSampleBrief("GLOBAL reranked with preferred brief", normalized);
     }
+
+    // Re-pin self-titled matches to the front before final slice
+    if (pinnedIds.size) {
+      const pinnedItems = normalized.filter(
+        (item) => item.id && pinnedIds.has(item.id)
+      );
+      if (pinnedItems.length) {
+        const seen = new Set<string>();
+        normalized = [...pinnedItems, ...normalized].filter((item) => {
+          if (!item.id) return true;
+          if (seen.has(item.id)) return false;
+          seen.add(item.id);
+          return true;
+        });
+      }
+    }
   } catch (err) {
     console.error("Rerank failed", err);
   }
 
   logSampleTitles("GLOBAL normalized", normalized);
 
-  return NextResponse.json({ results: normalized });
+  if (normalized.length > 0) {
+    return NextResponse.json({ results: normalized });
+  }
+
+  // Last-ditch Wikipedia fallback when MB has no results
+  try {
+    const wiki = await searchWikipediaTrack(title);
+    if (wiki) {
+      const normalizedWiki = {
+        id: wiki.id,
+        title: wiki.title,
+        artist: wiki.artist,
+        year: wiki.year,
+        score: null,
+        durationMs: null,
+        source: wiki.source,
+      };
+      return NextResponse.json({ results: [normalizedWiki] });
+    }
+  } catch (err) {
+    console.error("Wikipedia fallback failed", err);
+  }
+
+  return NextResponse.json({ results: [] });
 }

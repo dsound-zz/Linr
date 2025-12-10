@@ -26,6 +26,17 @@ export interface NormalizedRecording {
     mastering_engineers: string[];
     performers: { role: string; name: string }[];
   };
+  external?: {
+    source?: string;
+    personnel?: { role: string; name: string }[];
+  };
+  inferred?: {
+    credits: {
+      writers?: string[];
+      producers?: string[];
+      performers?: { role: string; name: string }[];
+    };
+  };
 }
 
 // MusicBrainz API Types
@@ -58,6 +69,8 @@ export interface MusicBrainzRelease {
   country?: string;
   disambiguation?: string;
   "release-group"?: MusicBrainzReleaseGroup;
+  relations?: MusicBrainzRelation[];
+  [key: string]: any;
 }
 
 export interface MusicBrainzRecording {
@@ -73,6 +86,8 @@ export interface MusicBrainzRecording {
   artistCredit?: MusicBrainzArtistCredit;
   releases?: MusicBrainzRelease[];
   artist?: string; // Sometimes added by our code
+  relations?: MusicBrainzRelation[];
+  [key: string]: any;
 }
 
 export interface MusicBrainzSearchResponse {
@@ -91,4 +106,24 @@ export interface SearchResultItem {
   durationMs?: number | null;
   releases?: MusicBrainzRelease[]; // optional raw releases array from MusicBrainz
   releaseTitle?: string | null;
+  source?: string; // e.g., musicbrainz (default) or wikipedia
+}
+
+export interface MusicBrainzRelation {
+  type?: string;
+  attributes?: string[];
+  artist?: MusicBrainzArtist;
+  name?: string;
+  target?: { name?: string };
+  "target-credit"?: string;
+  place?: {
+    name?: string;
+    area?: {
+      name?: string;
+      "iso-3166-1-codes"?: string[];
+      iso_3166_1_codes?: string[];
+    };
+  };
+  work?: any;
+  [key: string]: any;
 }

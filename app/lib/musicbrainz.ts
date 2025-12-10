@@ -1,6 +1,12 @@
 // lib/musicbrainz.ts
 import { MusicBrainzApi } from "musicbrainz-api";
-import type { SearchResultItem, MusicBrainzRecording, MusicBrainzArtistCreditEntry, MusicBrainzArtist } from "./types";
+import type {
+  SearchResultItem,
+  MusicBrainzRecording,
+  MusicBrainzArtistCreditEntry,
+  MusicBrainzArtist,
+  MusicBrainzRelease,
+} from "./types";
 import { logMusicBrainzResponse } from "./logger";
 
 let cachedClient: MusicBrainzApi | null = null;
@@ -215,6 +221,7 @@ export async function lookupRecording(id: string): Promise<MusicBrainzRecording>
     "artist-rels",
     "recording-rels",
     "work-rels",
+    "work-level-rels",
     "releases",
     "isrcs",
     "place-rels",
@@ -224,6 +231,38 @@ export async function lookupRecording(id: string): Promise<MusicBrainzRecording>
   await logMusicBrainzResponse("lookup", recording, undefined, id);
 
   return recording as MusicBrainzRecording;
+}
+
+export async function lookupRelease(id: string): Promise<MusicBrainzRelease> {
+  const mb = getMBClient();
+
+  const release = await mb.lookup("release", id, [
+    "artist-rels",
+    "recording-rels",
+    "label-rels",
+    "place-rels",
+    "url-rels",
+    "work-rels",
+    "work-level-rels",
+  ]);
+
+  await logMusicBrainzResponse("lookup", release, undefined, id);
+
+  return release as MusicBrainzRelease;
+}
+
+export async function lookupReleaseGroup(id: string): Promise<any> {
+  const mb = getMBClient();
+
+  const releaseGroup = await mb.lookup("release-group", id, [
+    "artist-rels",
+    "url-rels",
+    "place-rels",
+  ]);
+
+  await logMusicBrainzResponse("lookup", releaseGroup, undefined, id);
+
+  return releaseGroup;
 }
 
 export async function searchArtistByName(name: string): Promise<MusicBrainzArtist | null> {

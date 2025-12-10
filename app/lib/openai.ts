@@ -1,10 +1,12 @@
 import OpenAI from "openai";
 import { NORMALIZE_RECORDING_TEMPLATE } from "./prompts";
 import { formatArtistCredit } from "./musicbrainz";
+import { getWikipediaPersonnel } from "./wikipedia";
 import type {
   NormalizedRecording,
   SearchResultItem,
   MusicBrainzRecording,
+  MusicBrainzRelease,
 } from "./types";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -13,6 +15,53 @@ const client = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 type MutableCredits = NormalizedRecording["credits"];
 type MutableLocations = NormalizedRecording["locations"];
+
+interface MusicBrainzRelation {
+  type?: string;
+  attributes?: string[];
+  artist?: { name?: string };
+  name?: string;
+  target?: { name?: string };
+  "target-credit"?: string;
+  place?: {
+    name?: string;
+    area?: {
+      name?: string;
+      "iso-3166-1-codes"?: string[];
+      iso_3166_1_codes?: string[];
+    };
+  };
+  work?: {
+    relations?: MusicBrainzRelation[];
+    [key: string]: unknown;
+  };
+  relations?: MusicBrainzRelation[];
+  [key: string]: unknown; // For dynamic keys like "*-relation-list"
+}
+
+interface MusicBrainzWork {
+  relations?: MusicBrainzRelation[];
+  [key: string]: unknown; // For dynamic keys like "*-relation-list"
+}
+
+function canonicalPersonName(name: string | null | undefined): string {
+  const cleaned = (name ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const aliases: Record<string, string> = {
+    "dr luke": "lukasz gottwald",
+    "dr. luke": "lukasz gottwald",
+  };
+
+  return aliases[cleaned] ?? cleaned;
+}
+
+function normalizeRole(role: string | null | undefined): string {
+  return (role ?? "").toLowerCase().trim();
+}
 
 function pushUnique(list: string[], name?: string | null) {
   const clean = (name ?? "").trim();
@@ -47,7 +96,7 @@ function pushLocation(list: MutableLocations, entry: MutableLocations[number]) {
 }
 
 function collectRelationCredits(
-  rel: any,
+  rel: MusicBrainzRelation,
   credits: MutableCredits,
   locations: MutableLocations,
 ) {
@@ -157,56 +206,102 @@ function collectRelationCredits(
   }
 }
 
-function gatherAllRelations(raw: any): any[] {
-  const rels: any[] = [];
+function addArtistCreditPerformers(
+  raw: MusicBrainzRecording,
+  credits: MutableCredits,
+) {
+  const ac =
+    (raw as any)?.["artist-credit"] ?? (raw as any)?.artistCredit ?? [];
+  if (!Array.isArray(ac)) return;
 
-  if (Array.isArray(raw?.relations)) rels.push(...raw.relations);
+  ac.forEach((entry: any) => {
+    const name =
+      typeof entry === "string"
+        ? entry
+        : (entry?.name ?? entry?.artist?.name ?? "");
+    pushPerformer(credits.performers, { name, role: "performer" });
+  });
+}
 
-  Object.keys(raw ?? {}).forEach((key) => {
-    if (key.endsWith("-relation-list") && Array.isArray(raw[key])) {
-      rels.push(...raw[key]);
+function gatherRelationsFromEntity(entity: unknown): MusicBrainzRelation[] {
+  const rels: MusicBrainzRelation[] = [];
+  if (!entity || typeof entity !== "object") return rels;
+
+  const obj = entity as Record<string, unknown>;
+
+  if (Array.isArray((obj as { relations?: MusicBrainzRelation[] }).relations)) {
+    rels.push(...(obj as { relations?: MusicBrainzRelation[] }).relations!);
+  }
+
+  Object.keys(obj).forEach((key) => {
+    if (key.endsWith("-relation-list") && Array.isArray(obj[key])) {
+      rels.push(...(obj[key] as MusicBrainzRelation[]));
     }
   });
 
   return rels;
 }
 
-function collectWorkRelations(raw: any): any[] {
-  const workRels: any[] = [];
-
-  const rels = gatherAllRelations(raw);
-  rels.forEach((rel) => {
-    const work = rel?.work;
-    if (!work) return;
-    if (Array.isArray(work.relations)) {
-      workRels.push(...work.relations);
-    }
-    Object.keys(work).forEach((k) => {
-      if (k.endsWith("-relation-list") && Array.isArray(work[k])) {
-        workRels.push(...work[k]);
-      }
-    });
+function gatherAllRelations(
+  raw: MusicBrainzRecording,
+  release?: MusicBrainzRelease | null,
+  releaseGroup?: unknown | null,
+): MusicBrainzRelation[] {
+  const rels: MusicBrainzRelation[] = [];
+  [raw, release, releaseGroup].forEach((entity) => {
+    rels.push(...gatherRelationsFromEntity(entity));
   });
+  return rels;
+}
 
-  if (Array.isArray(raw?.works)) {
-    raw.works.forEach((work: any) => {
-      if (Array.isArray(work.relations)) workRels.push(...work.relations);
+function collectWorkRelations(
+  raw: MusicBrainzRecording,
+  release?: MusicBrainzRelease | null,
+): MusicBrainzRelation[] {
+  const workRels: MusicBrainzRelation[] = [];
+
+  const gatherFrom = (entity: unknown) => {
+    gatherRelationsFromEntity(entity).forEach((rel) => {
+      const work = rel?.work;
+      if (!work) return;
+      if (Array.isArray(work.relations)) {
+        workRels.push(...work.relations);
+      }
       Object.keys(work).forEach((k) => {
         if (k.endsWith("-relation-list") && Array.isArray(work[k])) {
-          workRels.push(...work[k]);
+          workRels.push(...(work[k] as MusicBrainzRelation[]));
         }
       });
     });
-  }
+
+    if (Array.isArray((entity as { works?: MusicBrainzWork[] })?.works)) {
+      (entity as { works?: MusicBrainzWork[] }).works?.forEach((work) => {
+        if (Array.isArray(work.relations)) workRels.push(...work.relations);
+        Object.keys(work).forEach((k) => {
+          if (k.endsWith("-relation-list") && Array.isArray(work[k])) {
+            workRels.push(...(work[k] as MusicBrainzRelation[]));
+          }
+        });
+      });
+    }
+  };
+
+  gatherFrom(raw);
+  gatherFrom(release);
 
   return workRels;
 }
 
-function deriveRecordingFromMB(raw: MusicBrainzRecording): NormalizedRecording {
-  const release =
-    Array.isArray(raw?.releases) && raw.releases.length
+function deriveRecordingFromMB(
+  raw: MusicBrainzRecording,
+  release?: MusicBrainzRelease | null,
+  releaseGroup?: unknown | null,
+): NormalizedRecording {
+  const primaryRelease =
+    release ||
+    (Array.isArray(raw?.releases) && raw.releases.length
       ? raw.releases[0]
-      : null;
+      : null);
 
   const credits: MutableCredits = {
     writers: [],
@@ -221,11 +316,25 @@ function deriveRecordingFromMB(raw: MusicBrainzRecording): NormalizedRecording {
 
   const locations: MutableLocations = [];
 
-  const rels = gatherAllRelations(raw);
+  const rels = gatherAllRelations(raw, primaryRelease, releaseGroup);
   rels.forEach((rel) => collectRelationCredits(rel, credits, locations));
 
-  const workRels = collectWorkRelations(raw);
+  const workRels = collectWorkRelations(raw, primaryRelease);
   workRels.forEach((rel) => collectRelationCredits(rel, credits, locations));
+
+  // Fallback: if no performers were found, treat artist-credit as performers
+  if (!credits.performers.length) {
+    addArtistCreditPerformers(raw, credits);
+  }
+
+  // Fallback: if writers empty, fold composers/lyricists into writers
+  if (!credits.writers.length) {
+    const merged = new Set<string>(credits.writers);
+    [...credits.composers, ...credits.lyricists].forEach((n) => {
+      if (n) merged.add(n);
+    });
+    credits.writers = Array.from(merged);
+  }
 
   const isrc =
     Array.isArray(raw?.isrcs) && raw.isrcs.length ? raw.isrcs[0] : null;
@@ -234,12 +343,20 @@ function deriveRecordingFromMB(raw: MusicBrainzRecording): NormalizedRecording {
     title: raw?.title ?? "",
     artist: formatArtistCredit(raw),
     release: {
-      title: release?.title ?? null,
-      date: release?.date ?? null,
-      country: release?.country ?? null,
+      title: primaryRelease?.title ?? null,
+      date:
+        primaryRelease?.date ??
+        (typeof (primaryRelease as Record<string, unknown>)?.[
+          "first-release-date"
+        ] === "string"
+          ? ((primaryRelease as Record<string, unknown>)[
+              "first-release-date"
+            ] as string)
+          : null),
+      country: primaryRelease?.country ?? null,
     },
     identifiers: {
-      mbid: (raw as any)?.id ?? "",
+      mbid: raw?.id ?? raw?.mbid ?? "",
       isrc,
     },
     locations,
@@ -255,30 +372,56 @@ function mergeNormalized(
     (b ?? "").trim() || a;
 
   const mergeArray = (a: string[], b?: string[]) => {
-    const set = new Set<string>(a);
-    (b ?? []).forEach((item) => {
-      const clean = (item ?? "").trim();
-      if (clean) set.add(clean);
-    });
-    return Array.from(set);
+    const map = new Map<string, string>();
+    const consider = (val?: string) => {
+      const clean = (val ?? "").trim();
+      if (!clean) return;
+      const key = canonicalPersonName(clean);
+      const existing = map.get(key);
+      if (!existing || clean.length > existing.length) map.set(key, clean);
+    };
+    a.forEach(consider);
+    (b ?? []).forEach(consider);
+    return Array.from(map.values());
   };
 
   const mergePerformers = (
     a: NormalizedRecording["credits"]["performers"],
     b?: NormalizedRecording["credits"]["performers"],
   ) => {
-    const seen = new Set<string>();
-    const out: NormalizedRecording["credits"]["performers"] = [];
-    [...a, ...(b ?? [])].forEach((p) => {
+    const out = new Map<string, { name: string; role: string }>();
+
+    const scoreRole = (role: string) => {
+      const r = role.toLowerCase();
+      if (r === "performer") return 0;
+      if (r === "vocals" || r === "vocal") return 1;
+      if (r.includes("lead")) return 2;
+      return 3;
+    };
+
+    const consider = (p?: { name?: string | null; role?: string | null }) => {
       const name = (p?.name ?? "").trim();
       if (!name) return;
       const role = (p?.role ?? "performer").trim();
-      const key = `${name}::${role}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      out.push({ name, role });
-    });
-    return out;
+      const key = canonicalPersonName(name);
+      const existing = out.get(key);
+      if (!existing) {
+        out.set(key, { name, role });
+        return;
+      }
+      const currentScore = scoreRole(existing.role);
+      const incomingScore = scoreRole(role);
+      if (
+        incomingScore > currentScore ||
+        (incomingScore === currentScore && name.length > existing.name.length)
+      ) {
+        out.set(key, { name, role });
+      }
+    };
+
+    [...a, ...(b ?? [])].forEach(consider);
+
+    return Array.from(out.values());
   };
 
   const mergeLocations = (
@@ -344,12 +487,201 @@ function mergeNormalized(
   };
 }
 
+function mergeInferred(
+  base: NormalizedRecording,
+  inferred?: Partial<NormalizedRecording["inferred"]>,
+): NormalizedRecording {
+  if (!inferred?.credits) return base;
+
+  const mergeStrings = (existing: string[], incoming?: string[]) => {
+    const map = new Map<string, string>();
+    const consider = (v?: string) => {
+      const clean = (v ?? "").trim();
+      if (!clean) return;
+      const key = canonicalPersonName(clean);
+      const prev = map.get(key);
+      if (!prev || clean.length > prev.length) map.set(key, clean);
+    };
+    existing.forEach(consider);
+    (incoming ?? []).forEach(consider);
+    return Array.from(map.values());
+  };
+
+  const mergePerformers = (
+    existing: NormalizedRecording["credits"]["performers"],
+    incoming?: NormalizedRecording["credits"]["performers"],
+  ) => {
+    const out = new Map<string, { name: string; role: string }>();
+    const scoreRole = (role: string) => {
+      const r = role.toLowerCase();
+      if (r === "performer") return 0;
+      if (r === "vocals" || r === "vocal") return 1;
+      if (r.includes("lead")) return 2;
+      return 3;
+    };
+
+    const consider = (p?: { name?: string | null; role?: string | null }) => {
+      const name = (p?.name ?? "").trim();
+      if (!name) return;
+      const role = (p?.role ?? "performer").trim();
+      const key = canonicalPersonName(name);
+      const existing = out.get(key);
+      if (!existing) {
+        out.set(key, { name, role });
+        return;
+      }
+      const currentScore = scoreRole(existing.role);
+      const incomingScore = scoreRole(role);
+      if (
+        incomingScore > currentScore ||
+        (incomingScore === currentScore && name.length > existing.name.length)
+      ) {
+        out.set(key, { name, role });
+      }
+    };
+
+    [...existing, ...(incoming ?? [])].forEach(consider);
+    return Array.from(out.values());
+  };
+
+  return {
+    ...base,
+    credits: {
+      ...base.credits,
+      writers: mergeStrings(base.credits.writers, inferred.credits.writers),
+      producers: mergeStrings(
+        base.credits.producers,
+        inferred.credits.producers,
+      ),
+      performers: mergePerformers(
+        base.credits.performers,
+        inferred.credits.performers,
+      ),
+    },
+    inferred: {
+      credits: {
+        writers: inferred.credits.writers ?? [],
+        producers: inferred.credits.producers ?? [],
+        performers: inferred.credits.performers ?? [],
+      },
+    },
+  };
+}
+
+async function inferAdditionalCredits(
+  title: string,
+  artist: string,
+): Promise<NormalizedRecording["inferred"]> {
+  const prompt = `
+Given a well-known song, return any widely-known credits ONLY if you are confident. If unsure, return empty arrays.
+Input:
+  title: "${title}"
+  artist: "${artist}"
+
+Rules:
+- Do NOT invent or guess obscure credits.
+- Only include names strongly associated with the original studio recording (not live covers).
+- Return JSON:
+{
+  "credits": {
+    "writers": string[],
+    "producers": string[],
+    "performers": [{ "name": string, "role": string }]
+  }
+}
+Use [] when unknown.
+`;
+
+  try {
+    const response = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const json = JSON.parse(response.choices[0].message.content || "{}");
+    return json;
+  } catch (err) {
+    console.error("inferAdditionalCredits failed", err);
+    return { credits: {} };
+  }
+}
+
+function mergeWikipediaPersonnel(
+  base: NormalizedRecording,
+  personnel: { name: string; role: string }[],
+): NormalizedRecording {
+  if (!personnel.length) return base;
+
+  const mapRoleToCredits = (entry: { name: string; role: string }) => {
+    const role = normalizeRole(entry.role);
+    const name = entry.name;
+    if (!name) return;
+
+    if (role.includes("producer")) {
+      pushUnique(base.credits.producers, name);
+      return;
+    }
+
+    if (role.includes("engineer") || role.includes("recording")) {
+      pushUnique(base.credits.recording_engineers, name);
+      return;
+    }
+
+    if (role.includes("mix")) {
+      pushUnique(base.credits.mixing_engineers, name);
+      return;
+    }
+
+    if (role.includes("master")) {
+      pushUnique(base.credits.mastering_engineers, name);
+      return;
+    }
+
+    if (role.includes("write") || role.includes("composer") || role.includes("lyrics")) {
+      pushUnique(base.credits.writers, name);
+      return;
+    }
+
+    pushPerformer(base.credits.performers, { name, role: entry.role || "performer" });
+  };
+
+  personnel.forEach(mapRoleToCredits);
+
+  const existingExternal = base.external?.personnel ?? [];
+  const dedup = new Map<string, { name: string; role: string }>();
+  [...existingExternal, ...personnel].forEach((p) => {
+    if (!p?.name) return;
+    const key = `${canonicalPersonName(p.name)}::${normalizeRole(p.role)}`;
+    if (!dedup.has(key)) {
+      dedup.set(key, { name: p.name, role: p.role });
+    }
+  });
+
+  return {
+    ...base,
+    external: {
+      source: "wikipedia",
+      personnel: Array.from(dedup.values()),
+    },
+  };
+}
+
 export async function normalizeRecording(
   raw: MusicBrainzRecording,
+  opts?: {
+    release?: MusicBrainzRelease | null;
+    releaseGroup?: unknown | null;
+    allowInferred?: boolean;
+    allowExternal?: boolean;
+  },
 ): Promise<NormalizedRecording> {
-  const derived = deriveRecordingFromMB(raw);
+  const derived = deriveRecordingFromMB(raw, opts?.release, opts?.releaseGroup);
 
-  if (!OPENAI_API_KEY) return derived;
+  if (!OPENAI_API_KEY) {
+    return derived;
+  }
 
   try {
     const prompt = NORMALIZE_RECORDING_TEMPLATE(raw);
@@ -367,7 +699,36 @@ export async function normalizeRecording(
     });
 
     const json = JSON.parse(response.choices[0].message.content || "{}");
-    return mergeNormalized(derived, json);
+    const merged = mergeNormalized(derived, json);
+
+    if (opts?.allowInferred) {
+      try {
+        const inferred = await inferAdditionalCredits(
+          merged.title ?? "",
+          merged.artist ?? "",
+        );
+        return mergeInferred(merged, inferred);
+      } catch (err) {
+        console.error("normalizeRecording inferred credits failed", err);
+      }
+    }
+
+    if (opts?.allowExternal !== false) {
+      try {
+        const wikiPersonnel = await getWikipediaPersonnel(
+          merged.title ?? "",
+          merged.artist ?? "",
+        );
+        if (wikiPersonnel.length) {
+          const mergedExternal = mergeWikipediaPersonnel(merged, wikiPersonnel);
+          return mergedExternal;
+        }
+      } catch (err) {
+        console.error("normalizeRecording wikipedia enrichment failed", err);
+      }
+    }
+
+    return merged;
   } catch (err) {
     console.error(
       "OpenAI normalizeRecording failed, using derived fallback",
