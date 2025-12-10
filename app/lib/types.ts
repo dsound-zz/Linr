@@ -10,6 +10,12 @@ export interface NormalizedRecording {
     mbid: string;
     isrc: string | null;
   };
+  locations: {
+    role: string;
+    name: string;
+    area: string | null;
+    country: string | null;
+  }[];
   credits: {
     writers: string[];
     composers: string[];

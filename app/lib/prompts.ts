@@ -9,6 +9,7 @@ RULES:
 2. Missing fields must be null or [].
 3. Preserve artist and credit names exactly.
 4. Output VALID JSON matching the schema.
+5. Locations come from recording/place relations (e.g., recorded at, mixed at, mastered at). Use relation type as role, place name as name; area/country from the place if present; otherwise null.
 
 SCHEMA:
 {
@@ -23,6 +24,14 @@ SCHEMA:
     "mbid": string,
     "isrc": string | null
   },
+  "locations": [
+    {
+      "role": string,
+      "name": string,
+      "area": string | null,
+      "country": string | null
+    }
+  ],
   "credits": {
     "writers": string[],
     "composers": string[],

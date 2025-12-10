@@ -217,6 +217,7 @@ export async function lookupRecording(id: string): Promise<MusicBrainzRecording>
     "work-rels",
     "releases",
     "isrcs",
+    "place-rels",
   ]);
 
   // Log the raw response before returning
