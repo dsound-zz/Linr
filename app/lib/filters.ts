@@ -253,6 +253,44 @@ export function isRepeatedTitleValue(
   return false;
 }
 
+const ALTERNATE_VERSION_KEYWORDS = [
+  "club mix",
+  "extended mix",
+  "radio mix",
+  "instrumental version",
+  "remix version",
+  "radio edit",
+  "acoustic version",
+  "strings version",
+  "dub version",
+  "instrumental",
+  "remix",
+  "acoustic",
+  "demo",
+  "karaoke",
+  "dub",
+  "orchestral",
+  "reprise",
+];
+
+const ALT_KEYWORD_PATTERN = ALTERNATE_VERSION_KEYWORDS.map(escapeRegex).join("|");
+const ALT_BRACKET_PATTERN = new RegExp(`[\\(\\[]\\s*(?:${ALT_KEYWORD_PATTERN})`, "i");
+const ALT_HYPHEN_PATTERN = new RegExp(`[\\-–—]\\s*(?:${ALT_KEYWORD_PATTERN})`, "i");
+const ALT_TRAILING_PATTERN = new RegExp(`(?:${ALT_KEYWORD_PATTERN})\\s*$`, "i");
+
+export function isAlternateVersionTitle(title?: string | null): boolean {
+  if (!title) return false;
+  const normalized = title.toLowerCase();
+  if (
+    ALT_BRACKET_PATTERN.test(normalized) ||
+    ALT_HYPHEN_PATTERN.test(normalized) ||
+    ALT_TRAILING_PATTERN.test(normalized)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function scoreRecordingMatch(
   rec: MusicBrainzRecording,
   userTitle: string,
@@ -318,4 +356,8 @@ function normalize(val: string | null | undefined): string {
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function escapeRegex(val: string): string {
+  return val.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 }

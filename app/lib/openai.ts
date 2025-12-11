@@ -7,6 +7,7 @@ import type {
   SearchResultItem,
   MusicBrainzRecording,
   MusicBrainzRelease,
+  MusicBrainzArtistCreditEntry,
 } from "./types";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -210,11 +211,10 @@ function addArtistCreditPerformers(
   raw: MusicBrainzRecording,
   credits: MutableCredits,
 ) {
-  const ac =
-    (raw as any)?.["artist-credit"] ?? (raw as any)?.artistCredit ?? [];
+  const ac = raw["artist-credit"] ?? raw.artistCredit ?? [];
   if (!Array.isArray(ac)) return;
 
-  ac.forEach((entry: any) => {
+  ac.forEach((entry: MusicBrainzArtistCreditEntry | string) => {
     const name =
       typeof entry === "string"
         ? entry
@@ -639,12 +639,19 @@ function mergeWikipediaPersonnel(
       return;
     }
 
-    if (role.includes("write") || role.includes("composer") || role.includes("lyrics")) {
+    if (
+      role.includes("write") ||
+      role.includes("composer") ||
+      role.includes("lyrics")
+    ) {
       pushUnique(base.credits.writers, name);
       return;
     }
 
-    pushPerformer(base.credits.performers, { name, role: entry.role || "performer" });
+    pushPerformer(base.credits.performers, {
+      name,
+      role: entry.role || "performer",
+    });
   };
 
   personnel.forEach(mapRoleToCredits);
@@ -679,8 +686,25 @@ export async function normalizeRecording(
 ): Promise<NormalizedRecording> {
   const derived = deriveRecordingFromMB(raw, opts?.release, opts?.releaseGroup);
 
+  let base = derived;
+  let wikiPersonnel: { name: string; role: string }[] = [];
+
+  if (opts?.allowExternal !== false) {
+    try {
+      wikiPersonnel = await getWikipediaPersonnel(
+        derived.title ?? "",
+        derived.artist ?? "",
+      );
+      if (wikiPersonnel.length) {
+        base = mergeWikipediaPersonnel(base, wikiPersonnel);
+      }
+    } catch (err) {
+      console.error("normalizeRecording wikipedia enrichment failed", err);
+    }
+  }
+
   if (!OPENAI_API_KEY) {
-    return derived;
+    return base;
   }
 
   try {
@@ -699,7 +723,7 @@ export async function normalizeRecording(
     });
 
     const json = JSON.parse(response.choices[0].message.content || "{}");
-    const merged = mergeNormalized(derived, json);
+    let merged = mergeNormalized(base, json);
 
     if (opts?.allowInferred) {
       try {
@@ -707,25 +731,14 @@ export async function normalizeRecording(
           merged.title ?? "",
           merged.artist ?? "",
         );
-        return mergeInferred(merged, inferred);
+        merged = mergeInferred(merged, inferred);
       } catch (err) {
         console.error("normalizeRecording inferred credits failed", err);
       }
     }
 
-    if (opts?.allowExternal !== false) {
-      try {
-        const wikiPersonnel = await getWikipediaPersonnel(
-          merged.title ?? "",
-          merged.artist ?? "",
-        );
-        if (wikiPersonnel.length) {
-          const mergedExternal = mergeWikipediaPersonnel(merged, wikiPersonnel);
-          return mergedExternal;
-        }
-      } catch (err) {
-        console.error("normalizeRecording wikipedia enrichment failed", err);
-      }
+    if (wikiPersonnel.length && opts?.allowExternal !== false) {
+      merged = mergeWikipediaPersonnel(merged, wikiPersonnel);
     }
 
     return merged;
@@ -734,7 +747,7 @@ export async function normalizeRecording(
       "OpenAI normalizeRecording failed, using derived fallback",
       err,
     );
-    return derived;
+    return base;
   }
 }
 
@@ -751,6 +764,7 @@ export async function rerankSearchResults(
     releaseTitle: c.releaseTitle,
     year: c.year,
     score: c.score,
+    source: c.source ?? "musicbrainz",
   }));
 
   const prompt = `
@@ -760,6 +774,8 @@ User query: "${userQuery}"
 
 Candidates (JSON array):
 ${JSON.stringify(payload, null, 2)}
+
+Each candidate has a "source" field indicating origin (e.g., "musicbrainz", "wikipedia", or "musicbrainz+wikipedia"). Prefer items that are supported by multiple sources or by Wikipedia when appropriate for mainstream recognition. Do not invent IDs; only return IDs from the provided candidates.
 
 Output the candidate IDs in best-first order as a JSON array of strings. Only include IDs that appear in the candidates. No commentary.
 `;

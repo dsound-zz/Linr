@@ -6,6 +6,7 @@ import {
   isNotCompilationTitle,
   isStudioReleaseTitle,
   titleMatchesQuery,
+  isAlternateVersionTitle,
   scoreRecordingMatch,
   isRepeatedSingleWordTitle
 } from "@/lib/filters";
@@ -23,7 +24,7 @@ import { normalizeSearchRecording } from "@/lib/normalizeSearch";
 import { parseUserQuery } from "@/lib/parseQuery";
 import { NextResponse } from "next/server";
 import { rerankSearchResults, inferLikelyArtists } from "@/lib/openai";
-import { searchWikipediaTrack } from "@/lib/wikipedia";
+import { searchWikipediaTrack, getWikipediaPersonnel } from "@/lib/wikipedia";
 import type { MusicBrainzRecording, SearchResultItem } from "@/lib/types";
 
 // Helper to convert SearchResultItem to MusicBrainzRecording
@@ -62,12 +63,20 @@ function cleanRecordingReleases(rec: MusicBrainzRecording): MusicBrainzRecording
 function cleanRecording(rec: MusicBrainzRecording, title: string, artist?: string | null): MusicBrainzRecording | null {
   if (artist && !recordingMatchesArtist(rec, artist)) return null;
   if (!isLikelyStudioVersion(rec)) return null;
+  if (isAlternateVersionTitle(rec.title)) return null;
   if (!titleMatchesQuery(rec, title)) return null;
 
   const cleaned = cleanRecordingReleases(rec);
   if (!cleaned) return null;
 
   return cleaned;
+}
+
+function filterAlternateVersionResults(
+  list: ReturnType<typeof normalizeSearchRecording>[],
+) {
+  const filtered = list.filter((item) => !isAlternateVersionTitle(item.title));
+  return filtered.length ? filtered : list;
 }
 
 function rankAndNormalize(
@@ -113,6 +122,50 @@ function normalizeText(val: string | null | undefined): string {
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function mergeSourceTags(
+  ...sources: (string | null | undefined)[]
+): string | undefined {
+  const set = new Set<string>();
+  sources
+    .filter(Boolean)
+    .flatMap((s) => String(s).split(/[+|,]/))
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .forEach((s) => set.add(s));
+
+  return set.size ? Array.from(set).join("+") : undefined;
+}
+
+function mergeResultByTitleArtist(
+  list: ReturnType<typeof normalizeSearchRecording>[],
+  incoming: ReturnType<typeof normalizeSearchRecording>,
+) {
+  const incomingKey = `${normalizeText(incoming.title)}::${normalizeText(incoming.artist)}`;
+  const existingIdx = list.findIndex(
+    (item) =>
+      `${normalizeText(item.title)}::${normalizeText(item.artist)}` ===
+      incomingKey,
+  );
+
+  if (existingIdx >= 0) {
+    const existing = list[existingIdx];
+    const merged = {
+      ...existing,
+      year: existing.year ?? incoming.year ?? null,
+      durationMs: existing.durationMs ?? incoming.durationMs ?? null,
+      score: existing.score ?? incoming.score ?? null,
+      source: mergeSourceTags(
+        existing.source || "musicbrainz",
+        incoming.source || "musicbrainz",
+      ),
+    };
+    list[existingIdx] = merged;
+    return list;
+  }
+
+  return [incoming, ...list];
 }
 
 function isTitleTrackOnSelfTitledRelease(rec: any, userTitle: string): boolean {
@@ -374,6 +427,113 @@ export async function GET(req: Request) {
 
   const { title, artist } = parseUserQuery(q);
   const isSingleWordQuery = title.trim().split(/\s+/).length === 1;
+  const pinnedIds = new Set<string>();
+
+  const wikiQuery = artist ? `${title} ${artist}` : title;
+  const wikiPromise = (async () => {
+    try {
+      return await searchWikipediaTrack(wikiQuery);
+    } catch (err) {
+      console.error("Wikipedia search failed", err);
+      return null;
+    }
+  })();
+
+  const wikiPersonnelPromise = (async () => {
+    try {
+      return await getWikipediaPersonnel(title, artist ?? "");
+    } catch (err) {
+      console.error("Wikipedia personnel fetch failed", err);
+      return [];
+    }
+  })();
+
+  const includeWikipediaCandidate = async (
+    list: ReturnType<typeof normalizeSearchRecording>[],
+  ) => {
+    try {
+      const wiki = await wikiPromise;
+      if (!wiki) return list;
+
+      const wikiNormalized = {
+        id: wiki.id,
+        title: wiki.title,
+        artist: wiki.artist,
+        year: wiki.year,
+        durationMs: null,
+        score: null,
+        source: wiki.source ?? "wikipedia",
+      };
+
+      const merged = mergeResultByTitleArtist(list, wikiNormalized);
+      const pinnedId =
+        merged.find(
+          (item) =>
+            normalizeText(item.title) === normalizeText(wikiNormalized.title) &&
+            normalizeText(item.artist) === normalizeText(wikiNormalized.artist),
+        )?.id ?? wikiNormalized.id;
+
+      if (pinnedId) pinnedIds.add(pinnedId);
+
+      return merged;
+    } catch (err) {
+      console.error("Wikipedia candidate merge failed", err);
+      return list;
+    }
+  };
+
+  const WIKIPEDIA_PERSONNEL_ROLE_KEYWORDS = [
+    "vocals",
+    "vocal",
+    "voice",
+    "singer",
+    "lead",
+    "featuring",
+    "featured",
+    "guest",
+  ];
+
+  function extractWikipediaArtistCandidates(
+    personnel: { name: string; role: string }[],
+    primaryArtist?: string | null,
+    limit = 3,
+  ): string[] {
+    const normalizedPrimary = normalizeText(primaryArtist);
+    const seen = new Set<string>();
+    const keywordMatched: string[] = [];
+
+    for (const entry of personnel) {
+      const rawName = (entry?.name ?? "").trim();
+      const normalizedName = normalizeText(rawName);
+      if (!rawName || !normalizedName) continue;
+      if (normalizedName === normalizedPrimary) continue;
+      if (seen.has(normalizedName)) continue;
+      const role = (entry?.role ?? "").toLowerCase();
+      const hasKeyword = WIKIPEDIA_PERSONNEL_ROLE_KEYWORDS.some((kw) =>
+        role.includes(kw),
+      );
+      if (!hasKeyword) continue;
+      seen.add(normalizedName);
+      keywordMatched.push(rawName);
+      if (keywordMatched.length === limit) break;
+    }
+
+    if (keywordMatched.length >= limit) return keywordMatched;
+
+    const fallback: string[] = [];
+    for (const entry of personnel) {
+      if (keywordMatched.length + fallback.length >= limit) break;
+      const rawName = (entry?.name ?? "").trim();
+      const normalizedName = normalizeText(rawName);
+      if (!rawName || !normalizedName) continue;
+      if (normalizedName === normalizedPrimary) continue;
+      if (seen.has(normalizedName)) continue;
+      seen.add(normalizedName);
+      fallback.push(rawName);
+    }
+
+    return [...keywordMatched, ...fallback].slice(0, limit);
+  }
 
   console.log(`[SEARCH] q="${q}" title="${title}" artist="${artist ?? ""}"`);
 
@@ -404,13 +564,14 @@ export async function GET(req: Request) {
       console.log(`[SCOPED] After cleanup: ${filtered.length}`);
 
       if (filtered.length > 0) {
-        const normalized = rankAndNormalize(
+        let normalized = rankAndNormalize(
           filtered,
           title,
           artistMatch.name,
           5
         );
 
+        normalized = await includeWikipediaCandidate(normalized);
         return NextResponse.json({ results: normalized });
       }
 
@@ -419,13 +580,14 @@ export async function GET(req: Request) {
           `[SCOPED] All filtered out — returning original scoped results`
         );
 
-        const normalized = rankAndNormalize(
+        let normalized = rankAndNormalize(
           scoped,
           title,
           artistMatch.name,
           5
         );
 
+        normalized = await includeWikipediaCandidate(normalized);
         return NextResponse.json({ results: normalized });
       }
 
@@ -499,7 +661,10 @@ export async function GET(req: Request) {
   // Also capture self-titled matches from the unfiltered global set to reinsert if they were filtered out
   const selfTitledFromRaw = buildSelfTitledBoost(global, title);
   const allSelfTitled = [...selfTitledBoost, ...selfTitledFromRaw];
-  const pinnedIds = new Set(allSelfTitled.map((item) => item.id).filter(Boolean));
+  allSelfTitled
+    .map((item) => item.id)
+    .filter(Boolean)
+    .forEach((id) => pinnedIds.add(id as string));
   const pinnedArtists = new Set(
     allSelfTitled.map((item) => normalizeText(item.artist)).filter(Boolean)
   );
@@ -674,6 +839,51 @@ export async function GET(req: Request) {
     }
   }
 
+  const wikiPersonnel = await wikiPersonnelPromise;
+  const wikiPersonnelArtists = extractWikipediaArtistCandidates(
+    wikiPersonnel,
+    artist,
+  );
+  if (wikiPersonnelArtists.length > 0) {
+    preferredArtists = Array.from(
+      new Set([...preferredArtists, ...wikiPersonnelArtists]),
+    );
+    const targeted = await Promise.all(
+      wikiPersonnelArtists.map((a) =>
+        searchRecordingsByTitleAndArtistName(title, a)
+      ),
+    );
+    targeted.forEach((list, idx) => {
+      logSampleTitles(
+        `GLOBAL wikipedia-personnel raw [${wikiPersonnelArtists[idx]}]`,
+        list
+      );
+      logSampleBrief(
+        `GLOBAL wikipedia-personnel raw brief [${wikiPersonnelArtists[idx]}]`,
+        list
+      );
+    });
+    const targetedNormalized = targeted
+      .flat()
+      .map((rec) => cleanRecording(rec, title))
+      .filter((rec): rec is MusicBrainzRecording => rec !== null)
+      .map((rec) =>
+        normalizeSearchRecording({
+          ...rec,
+          artist: getArtistName(rec),
+        })
+      );
+    preferredPool = preferredPool.concat(targetedNormalized);
+    const merged = [...targetedNormalized, ...normalized];
+    const seen = new Set<string>();
+    normalized = merged.filter((item) => {
+      if (!item.id) return true;
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+  }
+
   // Extra popular-artist fallback (covers cases like "hello" => Adele)
   // Collapse to earliest release per title+artist to avoid reissues dominating
   normalized = keepEarliestPerTitleArtist(normalized);
@@ -713,6 +923,9 @@ export async function GET(req: Request) {
     }
   }
 
+  normalized = await includeWikipediaCandidate(normalized);
+  normalized = filterAlternateVersionResults(normalized);
+
   // LLM rerank to boost the most obvious matches
   try {
     const preRerank = normalized.slice();
@@ -738,6 +951,7 @@ export async function GET(req: Request) {
         year: item.year,
         score: item.score,
         durationMs: item.durationMs ?? null,
+        source: item.source,
       }));
       normalized = rerankedNormalized
         .concat(normalized)
@@ -786,6 +1000,8 @@ export async function GET(req: Request) {
     console.error("Rerank failed", err);
   }
 
+  normalized = filterAlternateVersionResults(normalized);
+
   logSampleTitles("GLOBAL normalized", normalized);
 
   if (normalized.length > 0) {
@@ -794,7 +1010,7 @@ export async function GET(req: Request) {
 
   // Last-ditch Wikipedia fallback when MB has no results
   try {
-    const wiki = await searchWikipediaTrack(title);
+    const wiki = await wikiPromise;
     if (wiki) {
       const normalizedWiki = {
         id: wiki.id,
@@ -803,7 +1019,7 @@ export async function GET(req: Request) {
         year: wiki.year,
         score: null,
         durationMs: null,
-        source: wiki.source,
+        source: wiki.source ?? "wikipedia",
       };
       return NextResponse.json({ results: [normalizedWiki] });
     }
