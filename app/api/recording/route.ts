@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
-import { lookupRecording, lookupRelease, lookupReleaseGroup } from "@/lib/musicbrainz";
+import {
+  lookupRecording,
+  lookupRelease,
+  lookupReleaseGroup,
+} from "@/lib/musicbrainz";
 import { normalizeRecording } from "@/lib/openai";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id");
+  const source = searchParams.get("source");
   // Default to inferred credits on; allow explicit opt-out with inferred=0/false
   const inferredParam = searchParams.get("inferred");
   const allowInferred =
@@ -16,7 +21,20 @@ export async function GET(req: Request) {
   if (!id) {
     return NextResponse.json(
       { error: "Missing 'id' query parameter" },
-      { status: 400 }
+      { status: 400 },
+    );
+  }
+
+  // Only allow MusicBrainz lookup for MusicBrainz sources
+  // Allow undefined/null source for backward compatibility
+  if (id.startsWith("wiki:") || (source && source !== "musicbrainz")) {
+    return NextResponse.json(
+      {
+        error: "Lookup is only supported for MusicBrainz sources",
+        id,
+        source: source || null,
+      },
+      { status: 400 },
     );
   }
 
@@ -25,8 +43,9 @@ export async function GET(req: Request) {
 
     // Pull the primary release and release-group to harvest additional relations
     const primaryRelease = raw.releases?.[0];
-    const release =
-      primaryRelease?.id ? await lookupRelease(primaryRelease.id) : null;
+    const release = primaryRelease?.id
+      ? await lookupRelease(primaryRelease.id)
+      : null;
     const releaseGroupId =
       release?.["release-group"]?.id ??
       primaryRelease?.["release-group"]?.id ??
@@ -45,7 +64,7 @@ export async function GET(req: Request) {
     console.error("Recording error:", err);
     return NextResponse.json(
       { error: "Failed to fetch recording details" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

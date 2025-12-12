@@ -35,7 +35,7 @@ export async function logMusicBrainzResponse(
   endpoint: "search" | "lookup",
   rawResponse: MusicBrainzSearchResponse | MusicBrainzRecording,
   query?: string,
-  id?: string
+  id?: string,
 ): Promise<void> {
   try {
     await ensureLogsDir();
@@ -60,5 +60,74 @@ export async function logMusicBrainzResponse(
   } catch (error) {
     // Don't throw - logging failures shouldn't break the app
     console.error("Failed to log MusicBrainz response:", error);
+  }
+}
+
+/**
+ * Summarizes arrays of recordings to just counts and sample titles
+ */
+function summarizeRecordings(
+  recordings: unknown[] | undefined,
+  maxSamples = 5,
+): unknown {
+  if (!Array.isArray(recordings) || recordings.length === 0) {
+    return { count: 0, samples: [] };
+  }
+
+  const samples = recordings.slice(0, maxSamples).map((rec: any) => ({
+    id: rec.id,
+    title: rec.title,
+    artist: rec.artist,
+    score: rec.score,
+  }));
+
+  return {
+    count: recordings.length,
+    samples,
+  };
+}
+
+/**
+ * Logs search pipeline debug info to a JSONL file, overwriting each time
+ */
+export async function logSearchDebugInfo(
+  query: string,
+  debugInfo: {
+    stages: Record<string, unknown>;
+    candidates: Record<string, unknown>;
+  },
+  result: unknown,
+): Promise<void> {
+  try {
+    await ensureLogsDir();
+
+    // Summarize large arrays to keep file size manageable
+    const summarizedDebugInfo = {
+      stages: {
+        ...debugInfo.stages,
+        // Replace full arrays with summaries
+        recordings: summarizeRecordings(
+          debugInfo.stages.recordings as unknown[],
+        ),
+        filtered: summarizeRecordings(debugInfo.stages.filtered as unknown[]),
+        scored: summarizeRecordings(debugInfo.stages.scored as unknown[]),
+        results: summarizeRecordings(debugInfo.stages.results as unknown[]),
+      },
+      candidates: debugInfo.candidates,
+    };
+
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      query,
+      debugInfo: summarizedDebugInfo,
+      result,
+    };
+
+    // Overwrite the file each time (not append)
+    const line = JSON.stringify(logEntry, null, 2) + "\n";
+    await writeFile(MUSICBRAINZ_LOG_FILE, line, { flag: "w" });
+  } catch (error) {
+    // Don't throw - logging failures shouldn't break the app
+    console.error("Failed to log search debug info:", error);
   }
 }
