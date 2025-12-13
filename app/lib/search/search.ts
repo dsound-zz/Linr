@@ -7,15 +7,26 @@
 
 import { getMBClient } from "../musicbrainz";
 import type { MusicBrainzRecording, MusicBrainzArtist } from "../types";
+import {
+  getCached,
+  setCached,
+  cacheKeyRecording,
+  cacheKeyRelease,
+} from "./cache";
 
 /**
  * Search recordings by title only
  * For single-word queries, enforces canonical-song behavior
+ * Uses caching to reduce latency
  */
 export async function searchByTitle(
   title: string,
   limit = 200,
 ): Promise<MusicBrainzRecording[]> {
+  const cacheKey = cacheKeyRecording(`title:${title}:${limit}`);
+  const cached = getCached<MusicBrainzRecording[]>(cacheKey);
+  if (cached) return cached;
+
   const mb = getMBClient();
   const isSingleWord = title.trim().split(/\s+/).length === 1;
 
@@ -119,7 +130,9 @@ export async function searchByTitle(
   // DO NOT filter before returning - return raw MusicBrainz recordings
   // Let the pipeline handle filtering and scoring
   console.log(`[MB SEARCH] Total recordings returned: ${recordings.length}`);
-  return recordings.slice(0, limit);
+  const result = recordings.slice(0, limit);
+  setCached(cacheKey, result);
+  return result;
 }
 
 /**
@@ -168,10 +181,15 @@ export async function searchByExactTitle(
  * Search for exact recording title match using quoted syntax
  * MusicBrainz query: recording:"Jump"
  * Returns raw MusicBrainz recordings for exact title matches only
+ * Uses caching to reduce latency
  */
 export async function searchExactRecordingTitle(
   title: string,
 ): Promise<MusicBrainzRecording[]> {
+  const cacheKey = cacheKeyRecording(`exact:${title}`);
+  const cached = getCached<MusicBrainzRecording[]>(cacheKey);
+  if (cached) return cached;
+
   const mb = getMBClient();
   // Convert to TitleCase for better matching (e.g., "jump" -> "Jump")
   const titleCase =
@@ -204,31 +222,45 @@ export async function searchExactRecordingTitle(
     }
   }
 
-  return recordings;
+  const result = recordings;
+  setCached(cacheKey, result);
+  return result;
 }
 
 /**
  * Search recordings by title AND artist name
+ * Uses caching to reduce latency
  */
 export async function searchByTitleAndArtist(
   title: string,
   artist: string,
   limit = 50,
 ): Promise<MusicBrainzRecording[]> {
+  const cacheKey = cacheKeyRecording(`title:${title}`, artist);
+  const cached = getCached<MusicBrainzRecording[]>(cacheKey);
+  if (cached) return cached;
+
   const mb = getMBClient();
   const query = `recording:"${title}" AND artist:"${artist}"`;
   const result = await mb.search("recording", { query, limit });
 
-  return result.recordings ?? [];
+  const recordings = result.recordings ?? [];
+  setCached(cacheKey, recordings);
+  return recordings;
 }
 
 /**
  * Search releases by exact title and extract matching tracks
  * Used as fallback when recording search fails for single-word queries
+ * Uses caching to reduce latency
  */
 export async function searchReleaseByTitle(
   title: string,
 ): Promise<MusicBrainzRecording[]> {
+  const cacheKey = cacheKeyRelease(`exact:${title}`);
+  const cached = getCached<MusicBrainzRecording[]>(cacheKey);
+  if (cached) return cached;
+
   const mb = getMBClient();
   // Convert to TitleCase for better matching
   const titleCase =
@@ -314,6 +346,7 @@ export async function searchReleaseByTitle(
       }
     }
 
+    setCached(cacheKey, recordings);
     return recordings;
   } catch (err) {
     console.error("Release search failed:", err);
@@ -324,12 +357,17 @@ export async function searchReleaseByTitle(
 /**
  * Search recordings by title AND artist name
  * Used for candidate expansion with prominent artists
+ * Uses caching to reduce latency
  */
 export async function searchByTitleAndArtistName(
   title: string,
   artist: string,
   limit = 25,
 ): Promise<MusicBrainzRecording[]> {
+  const cacheKey = cacheKeyRecording(`exact:${title}`, artist);
+  const cached = getCached<MusicBrainzRecording[]>(cacheKey);
+  if (cached) return cached;
+
   const mb = getMBClient();
   const titleCase =
     title.charAt(0).toUpperCase() + title.slice(1).toLowerCase();
@@ -337,7 +375,9 @@ export async function searchByTitleAndArtistName(
 
   try {
     const result = await mb.search("recording", { query, limit });
-    return result.recordings ?? [];
+    const recordings = result.recordings ?? [];
+    setCached(cacheKey, recordings);
+    return recordings;
   } catch (err) {
     console.error(`Search failed for "${title}" by "${artist}":`, err);
     return [];

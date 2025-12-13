@@ -80,14 +80,37 @@ function toCanonicalResult(
         return yearA - yearB;
       })[0] || recording.releases[0];
 
+  // Determine entity type based on source
+  let entityType: CanonicalResult["entityType"] = "recording";
+  let explanation: string | undefined;
+
+  if (
+    recording.source === "release-track" ||
+    recording.source === "album-title-inferred"
+  ) {
+    entityType = "album_track";
+    explanation = "Identified via album context";
+  } else if (recording.source === "wikipedia-inferred") {
+    if (earliestRelease?.title) {
+      entityType = "album_track";
+      explanation = "Identified as the title track from album context";
+    } else {
+      entityType = "song_inferred";
+      explanation =
+        "Culturally canonical song, not consistently modeled as a recording";
+    }
+  }
+
   return {
     id: recording.id,
     title: recording.title,
     artist: recording.artist,
     year: earliestRelease?.year ?? null,
     releaseTitle: earliestRelease?.title ?? null,
+    entityType,
     confidenceScore: recording.score ?? 0,
     source,
+    explanation,
   };
 }
 

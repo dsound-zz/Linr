@@ -24,24 +24,52 @@ export async function GET(req: Request) {
   try {
     if (debug) {
       console.log("[SEARCH] Debug mode enabled for query:", q);
-      const { result, debugInfo } = await searchCanonicalSong(q, true as const);
+      const { response, debugInfo } = await searchCanonicalSong(
+        q,
+        true as const,
+      );
       console.log("[SEARCH] Debug info:", JSON.stringify(debugInfo, null, 2));
 
       // Write debug info to JSONL file (overwrites each time)
-      await logSearchDebugInfo(q, debugInfo, result);
-      if (!result) {
-        return NextResponse.json({ results: [], debugInfo });
+      await logSearchDebugInfo(
+        q,
+        debugInfo,
+        response?.mode === "canonical" ? response.result : response?.results,
+      );
+      if (!response) {
+        return NextResponse.json({ mode: "canonical", results: [], debugInfo });
       }
-      return NextResponse.json({ results: [result], debugInfo });
+      if (response.mode === "canonical") {
+        return NextResponse.json({
+          mode: "canonical",
+          results: [response.result],
+          debugInfo,
+        });
+      }
+      return NextResponse.json({
+        mode: "ambiguous",
+        results: response.results,
+        debugInfo,
+      });
     }
 
-    const result = await searchCanonicalSong(q);
+    const response = await searchCanonicalSong(q);
 
-    if (!result) {
-      return NextResponse.json({ results: [] });
+    if (!response) {
+      return NextResponse.json({ mode: "canonical", results: [] });
     }
 
-    return NextResponse.json({ results: [result] });
+    if (response.mode === "canonical") {
+      return NextResponse.json({
+        mode: "canonical",
+        results: [response.result],
+      });
+    }
+
+    return NextResponse.json({
+      mode: "ambiguous",
+      results: response.results,
+    });
   } catch (error) {
     console.error("Search error:", error);
     return NextResponse.json(

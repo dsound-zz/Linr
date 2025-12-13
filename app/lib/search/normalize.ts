@@ -14,6 +14,7 @@ import type { NormalizedRecording, ReleaseInfo } from "./types";
  */
 export function normalizeRecording(
   rec: MusicBrainzRecording,
+  source?: "release-track" | "musicbrainz" | "album-title-inferred",
 ): NormalizedRecording {
   const id = rec.id ?? "";
   const title = rec.title ?? "";
@@ -43,6 +44,7 @@ export function normalizeRecording(
     releases,
     lengthMs: rec.length ?? null,
     score,
+    source: source ?? "musicbrainz",
   };
 }
 
@@ -51,6 +53,7 @@ export function normalizeRecording(
  */
 export function normalizeRecordings(
   recordings: MusicBrainzRecording[],
+  source?: "release-track" | "musicbrainz" | "album-title-inferred",
 ): NormalizedRecording[] {
-  return recordings.map(normalizeRecording);
+  return recordings.map((rec) => normalizeRecording(rec, source));
 }

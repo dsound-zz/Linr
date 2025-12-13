@@ -39,7 +39,7 @@ export function formatArtistCredit(recording: MusicBrainzRecording): string {
 
 export async function searchGlobalRecordings(
   query: string,
-  totalLimit = 200
+  totalLimit = 200,
 ): Promise<SearchResultItem[]> {
   const mb = getMBClient();
 
@@ -67,7 +67,7 @@ export async function searchGlobalRecordings(
   }
 
   return recordings.map((rec: MusicBrainzRecording): SearchResultItem => {
-    const id = rec.id ?? rec["id"] ?? rec["mbid"];
+    const id = rec.id ?? rec["id"] ?? rec["mbid"] ?? "";
     const artist = formatArtistCredit(rec);
     const primaryRelease =
       Array.isArray(rec.releases) && rec.releases.length > 0
@@ -81,12 +81,12 @@ export async function searchGlobalRecordings(
       typeof rec.score === "number"
         ? rec.score
         : rec["ext:score"]
-        ? Number(rec["ext:score"])
-        : null;
+          ? Number(rec["ext:score"])
+          : null;
 
     return {
       id,
-      title: rec.title,
+      title: rec.title ?? "",
       artist,
       year,
       score,
@@ -98,7 +98,7 @@ export async function searchGlobalRecordings(
 
 export async function searchRecordingsByExactTitle(
   title: string,
-  totalLimit = 200
+  totalLimit = 200,
 ): Promise<SearchResultItem[]> {
   const mb = getMBClient();
   const query = `recording:"${title}"`;
@@ -126,7 +126,7 @@ export async function searchRecordingsByExactTitle(
   }
 
   return recordings.map((rec: MusicBrainzRecording): SearchResultItem => {
-    const id = rec.id ?? rec["id"] ?? rec["mbid"];
+    const id = rec.id ?? rec["id"] ?? rec["mbid"] ?? "";
     const artist = formatArtistCredit(rec);
     const primaryRelease =
       Array.isArray(rec.releases) && rec.releases.length > 0
@@ -140,12 +140,12 @@ export async function searchRecordingsByExactTitle(
       typeof rec.score === "number"
         ? rec.score
         : rec["ext:score"]
-        ? Number(rec["ext:score"])
-        : null;
+          ? Number(rec["ext:score"])
+          : null;
 
     return {
       id,
-      title: rec.title,
+      title: rec.title ?? "",
       artist,
       year,
       score,
@@ -157,7 +157,7 @@ export async function searchRecordingsByExactTitle(
 
 export async function searchRecordingsByExactTitleNoRepeats(
   title: string,
-  totalLimit = 200
+  totalLimit = 200,
 ): Promise<SearchResultItem[]> {
   const mb = getMBClient();
   const query = `recording:"${title}" AND NOT recording:"${title} ${title}"`;
@@ -184,7 +184,7 @@ export async function searchRecordingsByExactTitleNoRepeats(
   }
 
   return recordings.map((rec: MusicBrainzRecording): SearchResultItem => {
-    const id = rec.id ?? rec["id"] ?? rec["mbid"];
+    const id = rec.id ?? rec["id"] ?? rec["mbid"] ?? "";
     const artist = formatArtistCredit(rec);
     const primaryRelease =
       Array.isArray(rec.releases) && rec.releases.length > 0
@@ -198,12 +198,12 @@ export async function searchRecordingsByExactTitleNoRepeats(
       typeof rec.score === "number"
         ? rec.score
         : rec["ext:score"]
-        ? Number(rec["ext:score"])
-        : null;
+          ? Number(rec["ext:score"])
+          : null;
 
     return {
       id,
-      title: rec.title,
+      title: rec.title ?? "",
       artist,
       year,
       score,
@@ -213,7 +213,9 @@ export async function searchRecordingsByExactTitleNoRepeats(
   });
 }
 
-export async function lookupRecording(id: string): Promise<MusicBrainzRecording> {
+export async function lookupRecording(
+  id: string,
+): Promise<MusicBrainzRecording> {
   const mb = getMBClient();
 
   const recording = await mb.lookup("recording", id, [
@@ -265,7 +267,9 @@ export async function lookupReleaseGroup(id: string): Promise<any> {
   return releaseGroup;
 }
 
-export async function searchArtistByName(name: string): Promise<MusicBrainzArtist | null> {
+export async function searchArtistByName(
+  name: string,
+): Promise<MusicBrainzArtist | null> {
   const mb = getMBClient();
 
   const result = await mb.search("artist", { query: name, limit: 5 });
@@ -283,7 +287,7 @@ export async function searchArtistByName(name: string): Promise<MusicBrainzArtis
 
 export async function searchRecordingsByTitleForArtist(
   title: string,
-  artistId: string
+  artistId: string,
 ): Promise<MusicBrainzRecording[]> {
   const mb = getMBClient();
 
@@ -299,7 +303,7 @@ export async function searchRecordingsByTitleForArtist(
 export async function searchRecordingsByTitleAndArtistName(
   title: string,
   artistName: string,
-  limit = 50
+  limit = 50,
 ): Promise<MusicBrainzRecording[]> {
   const mb = getMBClient();
   const query = `recording:"${title}" AND artist:"${artistName}"`;

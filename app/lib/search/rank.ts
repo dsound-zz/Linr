@@ -5,7 +5,7 @@
  * Higher score = more likely to be the canonical version.
  */
 
-import type { NormalizedRecording } from "./types";
+import type { NormalizedRecording, AlbumTrackCandidate } from "./types";
 import { isStudioRecording, isUSOrWorldwideRelease } from "./filters";
 
 /**
@@ -61,8 +61,10 @@ export function scoreRecording(
     }
   }
 
-  // Artist matching (if provided)
-  if (query.artist) {
+  // Artist matching (ONLY if provided in query)
+  // DO NOT use artist name similarity when artist is not in the query
+  const artistProvided = Boolean(query.artist);
+  if (artistProvided && query.artist) {
     const recArtist = normalize(recording.artist);
     const qArtist = normalize(query.artist);
 
@@ -70,6 +72,42 @@ export function scoreRecording(
       score += 25;
     } else {
       score -= 10; // Penalty for wrong artist
+    }
+  }
+  // When artist is not provided, artistScore = 0 (no boost, no penalty)
+
+  // Boost for canonical/well-known artists (even when not in query)
+  // This helps surface culturally significant recordings
+  if (!artistProvided) {
+    const recArtist = normalize(recording.artist);
+    const canonicalArtists = [
+      "quincy jones",
+      "michael jackson",
+      "prince",
+      "madonna",
+      "david bowie",
+      "stevie wonder",
+      "aretha franklin",
+      "james brown",
+      "ray charles",
+      "frank sinatra",
+      "elvis presley",
+      "the beatles",
+      "rolling stones",
+      "led zeppelin",
+      "pink floyd",
+      "queen",
+      "fleetwood mac",
+      "eagles",
+      "van halen",
+      "ac/dc",
+    ];
+
+    for (const canonical of canonicalArtists) {
+      if (recArtist.includes(canonical) || canonical.includes(recArtist)) {
+        score += 30; // Significant boost for canonical artists
+        break;
+      }
     }
   }
 
@@ -96,6 +134,16 @@ export function scoreRecording(
 
   if (hasAlbum) score += 10;
   if (hasSingle) score += 5;
+
+  // Album-title prominence boost: title track from canonical album
+  // If recording title matches release title, it's likely the title track
+  const isTitleTrack = releases.some((r) => {
+    if (!r.title) return false;
+    return normalize(r.title) === recTitle;
+  });
+  if (isTitleTrack && hasAlbum) {
+    score += 20; // Title track from album = canonical
+  }
 
   // Earliest release year (older songs get slight boost for cultural recognition)
   const years = releases
@@ -134,6 +182,77 @@ export function scoreRecording(
   // MusicBrainz score (light weight)
   if (recording.score !== null && recording.score !== undefined) {
     score += recording.score / 10; // Scale down MB score
+  }
+
+  return score;
+}
+
+/**
+ * Score an album track candidate
+ * Album tracks get minimal scoring - they should never outrank strong recordings
+ */
+export function scoreAlbumTrack(
+  albumTrack: AlbumTrackCandidate,
+  query: { title: string; artist?: string | null },
+): number {
+  let score = 0;
+
+  // Title matching (light weight)
+  const trackTitle = albumTrack.title.toLowerCase().trim();
+  const qTitle = query.title.toLowerCase().trim();
+
+  if (trackTitle === qTitle) {
+    score += 20; // Lower than recording exact match
+  } else if (trackTitle.includes(qTitle)) {
+    score += 10;
+  }
+
+  // Boost for canonical artists (even when not in query)
+  if (!query.artist) {
+    const trackArtist = albumTrack.artist.toLowerCase();
+    const canonicalArtists = [
+      "quincy jones",
+      "michael jackson",
+      "prince",
+      "madonna",
+      "david bowie",
+      "stevie wonder",
+      "aretha franklin",
+      "james brown",
+      "ray charles",
+      "frank sinatra",
+      "elvis presley",
+      "the beatles",
+      "rolling stones",
+      "led zeppelin",
+      "pink floyd",
+    ];
+
+    for (const canonical of canonicalArtists) {
+      if (trackArtist.includes(canonical) || canonical.includes(trackArtist)) {
+        score += 10; // Boost for canonical artists
+        break;
+      }
+    }
+  }
+
+  // Boost for older releases (canonical era)
+  if (albumTrack.year) {
+    const year = parseInt(albumTrack.year, 10);
+    if (year <= 1990) {
+      score += 5;
+    }
+  }
+
+  // Artist matching (if provided)
+  if (query.artist) {
+    const trackArtist = albumTrack.artist.toLowerCase();
+    const qArtist = query.artist.toLowerCase();
+    if (trackArtist === qArtist || trackArtist.includes(qArtist)) {
+      score += 15;
+    } else {
+      score -= 5; // Light penalty for wrong artist
+    }
   }
 
   return score;

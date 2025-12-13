@@ -9,6 +9,7 @@ export type {
   CanonicalResult,
   NormalizedRecording,
   ParsedQuery,
+  SearchResponse,
 } from "./types";
 
 // Export individual modules for testing/debugging
