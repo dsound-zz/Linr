@@ -7,6 +7,7 @@
 
 import type { NormalizedRecording, AlbumTrackCandidate } from "./types";
 import { isStudioRecording, isUSOrWorldwideRelease } from "./filters";
+import { getArtistProminence } from "./artistProminence";
 
 /**
  * Score a recording based on how well it matches the query
@@ -76,38 +77,38 @@ export function scoreRecording(
   }
   // When artist is not provided, artistScore = 0 (no boost, no penalty)
 
-  // Boost for canonical/well-known artists (even when not in query)
-  // This helps surface culturally significant recordings
+  // Artist prominence boost (data-driven, not hardcoded)
+  // Prominence is a seatbelt - guarantees inclusion, slightly influences ranking
+  // But never forces canonical selection alone
   if (!artistProvided) {
-    const recArtist = normalize(recording.artist);
-    const canonicalArtists = [
-      "quincy jones",
-      "michael jackson",
-      "prince",
-      "madonna",
-      "david bowie",
-      "stevie wonder",
-      "aretha franklin",
-      "james brown",
-      "ray charles",
-      "frank sinatra",
-      "elvis presley",
-      "the beatles",
-      "rolling stones",
-      "led zeppelin",
-      "pink floyd",
-      "queen",
-      "fleetwood mac",
-      "eagles",
-      "van halen",
-      "ac/dc",
-    ];
+    const prominence = getArtistProminence(recording);
+    const PROMINENCE_THRESHOLD = 30; // Minimum score to qualify as "prominent"
 
-    for (const canonical of canonicalArtists) {
-      if (recArtist.includes(canonical) || canonical.includes(recArtist)) {
-        score += 30; // Significant boost for canonical artists
-        break;
-      }
+    if (prominence.score >= PROMINENCE_THRESHOLD) {
+      score += 15; // Small boost for prominent artists
+      // Flag is stored in recording for later use in canonical selection
+      (
+        recording as NormalizedRecording & { isProminentArtist?: boolean }
+      ).isProminentArtist = true;
+    }
+
+    // Release diversity boost: artists with multiple diverse releases are likely more canonical
+    // This complements prominence scoring
+    const releases = recording.releases;
+    const uniqueReleaseTypes = new Set(
+      releases.map((r) => r.primaryType?.toLowerCase()).filter(Boolean),
+    );
+    const uniqueYears = new Set(releases.map((r) => r.year).filter(Boolean));
+    const hasMultipleReleaseTypes = uniqueReleaseTypes.size >= 2; // Album + Single
+    const hasMultipleYears = uniqueYears.size >= 2; // Released across multiple years
+    const hasMultipleReleases = releases.length >= 3; // Multiple releases total
+
+    // Boost for recordings with diverse release history (indicates canonical status)
+    if (hasMultipleReleaseTypes && hasMultipleReleases) {
+      score += 15; // Moderate boost for diverse release history
+    }
+    if (hasMultipleYears && hasMultipleReleases) {
+      score += 10; // Additional boost for multi-year releases
     }
   }
 
@@ -207,34 +208,8 @@ export function scoreAlbumTrack(
     score += 10;
   }
 
-  // Boost for canonical artists (even when not in query)
-  if (!query.artist) {
-    const trackArtist = albumTrack.artist.toLowerCase();
-    const canonicalArtists = [
-      "quincy jones",
-      "michael jackson",
-      "prince",
-      "madonna",
-      "david bowie",
-      "stevie wonder",
-      "aretha franklin",
-      "james brown",
-      "ray charles",
-      "frank sinatra",
-      "elvis presley",
-      "the beatles",
-      "rolling stones",
-      "led zeppelin",
-      "pink floyd",
-    ];
-
-    for (const canonical of canonicalArtists) {
-      if (trackArtist.includes(canonical) || canonical.includes(trackArtist)) {
-        score += 10; // Boost for canonical artists
-        break;
-      }
-    }
-  }
+  // Album tracks get minimal scoring - they should never outrank strong recordings
+  // No artist-based boost - rely on release data instead
 
   // Boost for older releases (canonical era)
   if (albumTrack.year) {

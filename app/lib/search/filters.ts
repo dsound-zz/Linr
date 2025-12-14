@@ -10,6 +10,7 @@ import type { NormalizedRecording } from "./types";
 /**
  * Check if recording title exactly matches or is a prefix match of the query
  * e.g., "Jump" matches "Jump" and "Jump (2015 Remaster)"
+ * Also handles featured artist titles: "Side to Side" matches "Side to Side (feat. Nicki Minaj)"
  */
 export function isExactOrPrefixTitleMatch(
   recording: NormalizedRecording,
@@ -25,6 +26,13 @@ export function isExactOrPrefixTitleMatch(
 
   // Prefix match (e.g., "jump" matches "jump (remaster)")
   if (recTitle.startsWith(q)) return true;
+
+  // Handle featured artist titles: strip "feat", "ft", "featuring", "with" and compare base title
+  // e.g., "side to side feat nicki minaj" should match "side to side"
+  const recTitleBase = recTitle
+    .split(/\s+(feat|ft|featuring|with)\s+/i)[0]
+    .trim();
+  if (recTitleBase === q) return true;
 
   return false;
 }

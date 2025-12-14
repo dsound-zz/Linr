@@ -471,6 +471,200 @@ export async function getReleaseTrackCandidates(
 }
 
 /**
+ * Discover album tracks by scanning release tracks (not album titles)
+ * Runs in parallel with recording search for title-only multi-word queries
+ * This is first-class discovery for modern pop songs that exist primarily as album tracks
+ */
+export async function discoverAlbumTracks(params: {
+  title: string;
+  candidateArtists: string[];
+  debugInfo?: {
+    stages: Record<string, unknown>;
+  } | null;
+}): Promise<AlbumTrackCandidate[]> {
+  const { title, candidateArtists, debugInfo } = params;
+
+  // Only for multi-word titles
+  if (title.trim().split(/\s+/).length < 2) {
+    return [];
+  }
+
+  if (candidateArtists.length === 0) {
+    return [];
+  }
+
+  const mb = getMBClient();
+  const normalizedQueryTitle = normalize(title);
+  const albumTrackCandidates: AlbumTrackCandidate[] = [];
+  let releasesScanned = 0;
+  let tracksScanned = 0;
+  const matchedArtists = new Set<string>();
+
+  console.log(
+    "[ALBUM TRACK DISCOVERY] Scanning tracks for:",
+    {
+      title,
+      candidateArtists: candidateArtists.length,
+    },
+  );
+
+  // For each candidate artist, search their releases and scan tracks
+  for (const artist of candidateArtists.slice(0, 10)) {
+    // Limit to top 10 artists to avoid too many API calls
+    try {
+      // Search releases by artist (albums and singles only)
+      const releaseQuery = `artist:"${artist}" AND (primarytype:Album OR primarytype:Single)`;
+      console.log(
+        `[ALBUM TRACK DISCOVERY] Searching releases for artist: ${artist}`,
+      );
+
+      // Paginate through releases (up to 100)
+      let offset = 0;
+      const limit = 100;
+      let hasMore = true;
+
+      while (hasMore && offset < 100) {
+        const releaseResult = await mb.search("release", {
+          query: releaseQuery,
+          limit,
+          offset,
+        });
+
+        const releases = releaseResult.releases ?? [];
+        if (releases.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        // Lookup each release to get tracklist
+        for (const release of releases) {
+          if (!release.id) continue;
+
+          try {
+            const releaseDetail = await mb.lookup("release", release.id, [
+              "recordings",
+            ]);
+
+            releasesScanned++;
+            const media = releaseDetail.media ?? [];
+            const releaseArtistCreditRaw =
+              release["artist-credit"] ?? releaseDetail["artist-credit"] ?? [];
+            const releaseArtistCredit = Array.isArray(releaseArtistCreditRaw)
+              ? releaseArtistCreditRaw
+              : [];
+
+            // Extract artist name
+            const firstEntry = releaseArtistCredit[0];
+            const artistName =
+              (typeof firstEntry === "object" && firstEntry?.name) ||
+              (typeof firstEntry === "object" && firstEntry?.artist?.name) ||
+              (typeof firstEntry === "string" ? firstEntry : null) ||
+              artist;
+
+            // Scan all tracks in this release
+            for (const medium of media) {
+              const tracks = medium.tracks ?? [];
+              for (const track of tracks) {
+                tracksScanned++;
+                const recording = track.recording;
+                if (!recording) continue;
+
+                const trackTitle = recording.title ?? "";
+                const normalizedTrackTitle = normalize(trackTitle);
+
+                // Match if normalized title equals query
+                if (normalizedTrackTitle === normalizedQueryTitle) {
+                  matchedArtists.add(artistName);
+
+                  // Inherit artist-credit from release if recording has weak/missing artist-credit
+                  const recordingArtistCreditRaw =
+                    recording["artist-credit"] ?? [];
+                  const recordingArtistCredit = Array.isArray(
+                    recordingArtistCreditRaw,
+                  )
+                    ? recordingArtistCreditRaw
+                    : [];
+                  const firstRecordingEntry = recordingArtistCredit[0];
+                  const hasWeakArtistCredit =
+                    recordingArtistCredit.length === 0 ||
+                    !(
+                      (typeof firstRecordingEntry === "object" &&
+                        firstRecordingEntry?.name) ||
+                      (typeof firstRecordingEntry === "object" &&
+                        firstRecordingEntry?.artist?.name) ||
+                      typeof firstRecordingEntry === "string"
+                    );
+
+                  // Use release artist-credit if recording has weak credit
+                  const finalArtistCredit = hasWeakArtistCredit
+                    ? releaseArtistCredit
+                    : recordingArtistCredit;
+
+                  // Build AlbumTrackCandidate
+                  const albumTrack: AlbumTrackCandidate = {
+                    title: trackTitle || recording?.title || title,
+                    artist: formatArtistCredit({
+                      "artist-credit": finalArtistCredit,
+                    } as MusicBrainzRecording),
+                    year: release.date
+                      ? release.date.slice(0, 4)
+                      : releaseDetail.date
+                        ? releaseDetail.date.slice(0, 4)
+                        : null,
+                    releaseTitle: release.title ?? releaseDetail.title ?? null,
+                    releaseId: release.id!,
+                    source: "musicbrainz",
+                  };
+                  albumTrackCandidates.push(albumTrack);
+
+                  console.log(
+                    `[ALBUM TRACK DISCOVERY] Found matching track: "${trackTitle}" by ${artistName} (release: ${release.title ?? releaseDetail.title})`,
+                  );
+                }
+              }
+            }
+          } catch (err) {
+            console.error(
+              `[ALBUM TRACK DISCOVERY] Failed to lookup release ${release.id}:`,
+              err,
+            );
+            continue;
+          }
+        }
+
+        offset += releases.length;
+        if (releases.length < limit) {
+          hasMore = false;
+        }
+      }
+    } catch (err) {
+      console.error(
+        `[ALBUM TRACK DISCOVERY] Failed to search releases for artist ${artist}:`,
+        err,
+      );
+      continue;
+    }
+  }
+
+  console.log(
+    `[ALBUM TRACK DISCOVERY] Completed: ${albumTrackCandidates.length} tracks found (${releasesScanned} releases scanned, ${tracksScanned} tracks scanned)`,
+  );
+
+  // Add debug logging
+  if (debugInfo) {
+    debugInfo.stages.albumTrackScan = {
+      releasesScanned,
+      tracksScanned,
+      matchesFound: albumTrackCandidates.length,
+      matchedArtists: Array.from(matchedArtists),
+      candidateArtists: candidateArtists.length,
+    };
+  }
+
+  return albumTrackCandidates;
+}
+
+/**
  * Normalize text for comparison
  */
 function normalize(val: string): string {

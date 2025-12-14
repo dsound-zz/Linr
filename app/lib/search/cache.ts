@@ -11,7 +11,17 @@ interface CacheEntry<T> {
 }
 
 const CACHE_TTL_MS = 300000; // 5 minutes
-const cache = new Map<string, CacheEntry<any>>();
+const cache = new Map<string, CacheEntry<unknown>>();
+
+/**
+ * Clear all cached entries.
+ *
+ * NOTE: This is primarily used by tests to avoid cross-test contamination,
+ * since the cache is module-scoped and would otherwise persist between tests.
+ */
+export function clearCache(): void {
+  cache.clear();
+}
 
 /**
  * Generate cache key from query parameters
@@ -47,7 +57,7 @@ export function getCached<T>(key: string): T | null {
  */
 export function setCached<T>(key: string, data: T): void {
   cache.set(key, {
-    data,
+    data: data as unknown,
     timestamp: Date.now(),
   });
 }

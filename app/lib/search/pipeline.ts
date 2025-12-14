@@ -26,7 +26,9 @@ import {
   searchByTitleAndArtistName,
 } from "./search";
 import { normalizeRecordings } from "./normalize";
-import { getReleaseTrackCandidates } from "./releaseTrackFallback";
+import { discoverAlbumTracks } from "./releaseTrackFallback";
+import { discoverArtistScopedRecordings } from "./artistScopedRecording";
+import { getPopularArtists, checkWikipediaPresence } from "./artistPopularity";
 import {
   isExactOrPrefixTitleMatch,
   isStudioRecording,
@@ -36,6 +38,8 @@ import { scoreRecording, scoreAlbumTrack } from "./rank";
 import { canonicalPick } from "./canonical";
 import { searchWikipediaTrack } from "./wikipedia";
 import { rerankCandidates } from "./openai";
+import { getArtistProminence } from "./artistProminence";
+import { normalizeArtistName } from "./utils/normalizeArtist";
 import type {
   NormalizedRecording,
   SearchResponse,
@@ -227,6 +231,97 @@ function applyFilters(
 }
 
 /**
+ * Check if a recording is a "must-include" candidate
+ * These are culturally obvious songs that should never be filtered out
+ * This is separate from ranking - inclusion is guaranteed, ranking controls order
+ *
+ * Criteria:
+ * - Exact normalized title match
+ * - Studio recording
+ * - Album release
+ * - Artist is a group OR well-known solo act OR old enough OR multiple releases
+ * - Not a repeated-word / novelty title
+ */
+function isMustIncludeCandidate(
+  rec: NormalizedRecording,
+  query: { title: string; artist?: string | null },
+): boolean {
+  const recTitle = normalize(rec.title);
+  const qTitle = normalize(query.title);
+
+  // 1. Must have exact normalized title match OR recording title starts with query title
+  // This handles cases like "Side to Side (feat. Nicki Minaj)" matching "Side to Side"
+  // Strip featured artist info: remove everything after "feat", "ft", "featuring", "with"
+  const recTitleBase = recTitle
+    .split(/\s+(feat|ft|featuring|with)\s+/i)[0]
+    .trim();
+  const titleMatches = recTitle === qTitle || recTitleBase === qTitle;
+  if (!titleMatches) return false;
+
+  // 2. Check for repeated-word / novelty titles (exclude these)
+  const words = recTitle.split(" ");
+  const uniqueWords = new Set(words);
+  if (uniqueWords.size === 1 && words.length > 1) {
+    // e.g., "jump jump jump" - exclude novelty titles
+    return false;
+  }
+
+  // 3. Must have album release (primary requirement for must-include)
+  // Album releases indicate canonical status regardless of remaster status
+  const hasAlbum = rec.releases.some(
+    (r) => r.primaryType?.toLowerCase() === "album",
+  );
+  if (!hasAlbum) return false;
+
+  // 4. Studio recording check (relaxed for must-include)
+  // If it has an album release and is old enough, allow it even if title has "remaster"
+  // This prevents remasters from blocking culturally obvious songs
+  const isStudio = isStudioRecording(rec);
+
+  // 5. Age or release diversity check
+  const years = rec.releases
+    .map((r) => (r.year ? parseInt(r.year) : null))
+    .filter((y): y is number => y !== null && !isNaN(y));
+  const isOldEnough =
+    years.length > 0 && Math.min(...years) <= new Date().getFullYear() - 15; // At least 15 years old
+  const hasMultipleReleases = rec.releases.length >= 3; // Multiple releases indicates canonical
+
+  // For must-include: if it has album release AND is old enough, allow even if not "studio"
+  // This ensures remasters of old canonical songs still qualify
+  if (!isStudio && !isOldEnough) return false;
+
+  // 6. Artist heuristics (group or well-known solo act)
+  const artistLower = rec.artist.toLowerCase();
+  const isGroup =
+    artistLower.includes("the ") ||
+    artistLower.includes(" & ") ||
+    artistLower.includes(" and ");
+
+  // 7. Check artist prominence (data-driven, not hardcoded)
+  // Prominent artists should be included even if not old enough or a group
+  const prominence = getArtistProminence(rec);
+  const isProminentArtist = prominence.score >= 30; // Same threshold as ranking
+
+  // 8. Check for US releases + albums (indicator of mainstream/canonical status)
+  // Even if not old enough, US album releases suggest canonical songs
+  const hasUSAlbumRelease = rec.releases.some(
+    (r) =>
+      r.primaryType?.toLowerCase() === "album" &&
+      r.country?.toUpperCase() === "US",
+  );
+
+  // Must satisfy: exact match + album + (studio OR old enough) + (group OR old enough OR multiple releases OR prominent artist OR US album release)
+  // US album releases are a strong signal for canonical status, even for newer songs
+  return (
+    isGroup ||
+    isOldEnough ||
+    hasMultipleReleases ||
+    isProminentArtist ||
+    hasUSAlbumRelease
+  );
+}
+
+/**
  * Score and sort recordings
  */
 function scoreAndSort(
@@ -242,6 +337,227 @@ function scoreAndSort(
 }
 
 /**
+ * Type for scored candidates (recordings or album tracks)
+ */
+type ScoredCandidate =
+  | (NormalizedRecording & { score: number })
+  | (AlbumTrackCandidate & { score: number });
+
+/**
+ * Generate canonical key for a work (title + primary artist)
+ * Used to identify canonical works that must be included
+ */
+function canonicalKey(title: string, artist: string): string {
+  const normalized = normalizeArtistName(artist);
+  return `${normalize(title)}::${normalize(normalized.primary)}`;
+}
+
+/**
+ * Generate song key for grouping (normalized title + normalized primary artist)
+ * Used in songCollapse to group candidates by song
+ */
+function songKey(title: string, artist: string): string {
+  const normalized = normalizeArtistName(artist);
+  return `${normalize(title)}::${normalize(normalized.primary)}`;
+}
+
+/**
+ * Collapse multiple candidates for the same song into a single representative
+ *
+ * Groups all candidates by songKey (normalizedTitle + "::" + normalizedPrimaryArtist)
+ * For each group, selects exactly one representative:
+ * - Prefer entityType === "recording" (only if recording was found in current search)
+ * - Else allow entityType === "album_track"
+ * - Discard all other candidates
+ *
+ * @param results - Array of canonical results to collapse
+ * @param recordingsFound - Set of songKeys for recordings found in current search (prevents test isolation issues)
+ * @returns Array with one result per songKey
+ */
+function songCollapse(
+  results: CanonicalResult[],
+  recordingsFound?: Set<string>,
+): CanonicalResult[] {
+  const groups = new Map<string, CanonicalResult[]>();
+
+  // Group by songKey
+  for (const result of results) {
+    const key = songKey(result.title, result.artist);
+    const group = groups.get(key) || [];
+    group.push(result);
+    groups.set(key, group);
+  }
+
+  // Select one representative per group
+  const collapsed: CanonicalResult[] = [];
+  for (const [key, group] of groups.entries()) {
+    // Prefer recording, else album_track
+    let representative: CanonicalResult | null = null;
+
+    // First, try to find a recording (must be explicitly marked as recording)
+    // Only prefer recording if it was found in the current search (not from previous tests)
+    const recordings = group.filter((r) => r.entityType === "recording");
+    // Only use recording if recordingsFound is provided AND contains this key
+    // This ensures we don't prefer recordings from previous test runs
+    const shouldUseRecording =
+      recordings.length > 0 && recordingsFound && recordingsFound.has(key);
+
+    if (shouldUseRecording) {
+      // If multiple recordings, prefer highest score
+      recordings.sort((a, b) => b.confidenceScore - a.confidenceScore);
+      representative = recordings[0];
+    } else {
+      // If no recording (or recording not found in current search), use album_track
+      const albumTracks = group.filter((r) => r.entityType === "album_track");
+      if (albumTracks.length > 0) {
+        // If multiple album tracks, prefer highest score
+        albumTracks.sort((a, b) => b.confidenceScore - a.confidenceScore);
+        representative = albumTracks[0];
+      }
+    }
+
+    // If we found a representative, add it
+    if (representative) {
+      collapsed.push(representative);
+    }
+  }
+
+  return collapsed;
+}
+
+/**
+ * Identify canonical works that must be preserved when slicing results
+ *
+ * This function identifies canonical works (title + primary artist) that must be preserved.
+ * A canonical work is identified by:
+ * 1. Artist is globally prominent (via popularity index) AND exact title match
+ * 2. Artist-scoped recording search produced an exact title match
+ * 3. album_track with releaseTitle === title (single)
+ * 4. release year ≥ 2000 AND artist has Wikipedia page AND exact title match
+ *
+ * Key change: This is work-based, not artist-based. One artist can appear multiple times
+ * if they have multiple canonical works. One canonical work must appear at least once.
+ *
+ * Returns a Set of canonical work keys (title::primaryArtist)
+ */
+async function identifyMustIncludeCandidates(
+  candidates: ScoredCandidate[],
+  title: string,
+  popularArtists: string[],
+  debugInfo?: {
+    stages: Record<string, unknown>;
+  } | null,
+): Promise<Set<string>> {
+  const normalizedTitle = normalize(title);
+  const canonicalWorks = new Set<string>();
+  const artistWikipediaCache = new Map<string, Promise<boolean>>();
+
+  // Normalize popular artists to primary names for comparison
+  const normalizedPopularArtists = popularArtists.map((a) =>
+    normalizeArtistName(a).primary.toLowerCase(),
+  );
+
+  for (const candidate of candidates) {
+    // Check if it's a recording or album track
+    const isAlbumTrack = "releaseId" in candidate;
+    const candidateTitle = normalize(candidate.title);
+    const titleMatches = candidateTitle === normalizedTitle;
+
+    if (!titleMatches) continue;
+
+    const candidateArtist = candidate.artist;
+    const normalizedArtist = normalizeArtistName(candidateArtist);
+    const primaryArtist = normalizedArtist.primary.toLowerCase();
+    const workKey = canonicalKey(candidateTitle, candidateArtist);
+
+    let shouldInclude = false;
+
+    // Criterion 1: Artist is globally prominent (check primary artist)
+    if (normalizedPopularArtists.includes(primaryArtist)) {
+      shouldInclude = true;
+    }
+
+    // Criterion 2: Artist-scoped recording search produced an exact title match
+    if (
+      !isAlbumTrack &&
+      (candidate as NormalizedRecording & { fromArtistScopedSearch?: boolean })
+        .fromArtistScopedSearch === true
+    ) {
+      shouldInclude = true;
+    }
+
+    // Criterion 3: album_track with releaseTitle === title (single)
+    if (
+      isAlbumTrack &&
+      candidate.releaseTitle &&
+      normalize(candidate.releaseTitle) === normalizedTitle
+    ) {
+      shouldInclude = true;
+    }
+
+    // Criterion 4: release year ≥ 2000 AND artist has Wikipedia page
+    if (!shouldInclude) {
+      let year: number | null = null;
+      let artistName: string | null = null;
+
+      if ("releases" in candidate) {
+        // Recording: check release years
+        const recording = candidate as NormalizedRecording & { score: number };
+        const years = recording.releases
+          .map((r) => (r.year ? parseInt(r.year) : null))
+          .filter((y): y is number => y !== null && !isNaN(y));
+        if (years.length > 0) {
+          year = Math.min(...years);
+          artistName = recording.artist;
+        }
+      } else if (isAlbumTrack) {
+        // Album track: check year property
+        const albumTrack = candidate as AlbumTrackCandidate & { score: number };
+        if (albumTrack.year) {
+          const parsedYear = parseInt(albumTrack.year);
+          if (!isNaN(parsedYear)) {
+            year = parsedYear;
+            artistName = albumTrack.artist;
+          }
+        }
+      }
+
+      if (year !== null && year >= 2000 && artistName) {
+        // Check Wikipedia presence for primary artist (with caching)
+        const primaryArtistKey = normalizeArtistName(artistName).primary;
+        let hasWikipedia: boolean;
+        if (artistWikipediaCache.has(primaryArtistKey)) {
+          hasWikipedia = await artistWikipediaCache.get(primaryArtistKey)!;
+        } else {
+          const wikiPromise = checkWikipediaPresence(primaryArtistKey);
+          artistWikipediaCache.set(primaryArtistKey, wikiPromise);
+          hasWikipedia = await wikiPromise;
+        }
+
+        if (hasWikipedia) {
+          shouldInclude = true;
+        }
+      }
+    }
+
+    if (shouldInclude) {
+      canonicalWorks.add(workKey);
+    }
+  }
+
+  // Debug logging for must-include identification
+  if (debugInfo) {
+    (debugInfo.stages as Record<string, unknown>).mustIncludeIdentification = {
+      candidatesChecked: candidates.length,
+      canonicalWorksFound: canonicalWorks.size,
+      canonicalWorks: Array.from(canonicalWorks),
+    };
+  }
+
+  return canonicalWorks;
+}
+
+/**
  * Check if query looks like a song title (not a live/remix/version query)
  */
 function queryLooksLikeSongTitle(title: string): boolean {
@@ -253,7 +569,16 @@ function queryLooksLikeSongTitle(title: string): boolean {
  * Step 6.5: Entity Resolution - makes explicit what type of entity we're returning
  */
 function resolveEntityType(result: CanonicalResult): CanonicalResult {
-  // MusicBrainz results are recordings
+  // Preserve entity type if already set correctly (e.g., album_track)
+  // Only change if entity type is not explicitly set or is ambiguous
+  if (
+    result.entityType === "album_track" ||
+    result.entityType === "song_inferred"
+  ) {
+    return result; // Preserve existing entity type
+  }
+
+  // MusicBrainz results are recordings (if not already album_track)
   if (result.source.startsWith("musicbrainz")) {
     return { ...result, entityType: "recording" };
   }
@@ -314,6 +639,7 @@ export async function searchCanonicalSong(
 
   let recordings: NormalizedRecording[] = [];
   let rawRecordings: MusicBrainzRecording[] = [];
+  let albumTrackCandidates: AlbumTrackCandidate[] = [];
 
   // Step 2: Search MusicBrainz (with timing)
   const searchStartTime = performance.now();
@@ -349,12 +675,93 @@ export async function searchCanonicalSong(
         }
       }
     } else {
-      // Multi-word queries - use broad search
+      // Multi-word queries - search recordings first, then discover album tracks
+      // Album tracks are first-class candidates for modern pop songs
       rawRecordings = await searchByTitle(title);
       recordings = normalizeRecordings(rawRecordings);
+
+      // Derive candidate artists from recording search results
+      // Extract unique artists from top recordings
+      const artistFrequency = new Map<string, number>();
+      for (const rec of recordings.slice(0, 50)) {
+        // Limit to top 50 to avoid processing too many
+        const artist = rec.artist;
+        if (artist) {
+          artistFrequency.set(artist, (artistFrequency.get(artist) || 0) + 1);
+        }
+      }
+
+      // Also check raw recordings for additional artists
+      for (const rec of rawRecordings.slice(0, 50)) {
+        const artistCredit = rec["artist-credit"] ?? [];
+        if (Array.isArray(artistCredit) && artistCredit.length > 0) {
+          const firstEntry = artistCredit[0];
+          const artistName =
+            (typeof firstEntry === "object" && firstEntry?.name) ||
+            (typeof firstEntry === "object" && firstEntry?.artist?.name) ||
+            (typeof firstEntry === "string" ? firstEntry : null);
+          if (artistName) {
+            artistFrequency.set(
+              artistName,
+              (artistFrequency.get(artistName) || 0) + 1,
+            );
+          }
+        }
+      }
+
+      // Sort by frequency and take top artists
+      const candidateArtists = Array.from(artistFrequency.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([artist]) => artist);
+
+      // Discover album tracks by scanning release tracks
+      const discoveredAlbumTracks = await discoverAlbumTracks({
+        title,
+        candidateArtists,
+        debugInfo,
+      });
+
+      albumTrackCandidates = discoveredAlbumTracks;
+
+      // Discover artist-scoped recordings for popular artists
+      // This fills the discovery gap for modern pop hits that don't appear in title-only searches
+      const popularArtists = await getPopularArtists(20, candidateArtists);
+      const artistScopedRecordings = await discoverArtistScopedRecordings({
+        title,
+        popularArtists,
+        debugInfo,
+      });
+
+      // Merge artist-scoped recordings into recordings (deduplicate by ID)
+      const existingIds = new Set(recordings.map((r) => r.id));
+      for (const rec of artistScopedRecordings) {
+        if (!existingIds.has(rec.id)) {
+          recordings.push(rec);
+          existingIds.add(rec.id);
+        }
+      }
+
+      // Store popular artists for must-include identification later
+      if (debugInfo) {
+        if (!debugInfo.stages) {
+          debugInfo.stages = {};
+        }
+        (debugInfo.stages as Record<string, unknown>).popularArtistsList =
+          popularArtists;
+      }
+
+      // Note: we intentionally do not merge artist-scoped recordings back into
+      // rawRecordings; the pipeline continues using normalized `recordings`.
+
       const searchTime = performance.now() - searchStartTime;
       if (debugInfo) {
         debugInfo.stages.recordings = recordings;
+        debugInfo.stages.albumTracks = {
+          found: discoveredAlbumTracks.length,
+          discovered: true,
+          candidateArtists: candidateArtists.length,
+        };
         debugInfo.stages.searchTiming = { ms: searchTime };
       }
     }
@@ -395,36 +802,43 @@ export async function searchCanonicalSong(
     }
   }
 
-  // Step 2.75: Release-track fallback for multi-word titles
-  // Only when: no artist, 2+ words
-  // This catches songs that exist primarily as release tracks (e.g., "The Dude" by Quincy Jones)
+  // Album track discovery now runs in parallel with recording search for multi-word queries
+  // (handled above in the search section)
   // Keep album tracks as a separate entity type - do NOT merge with recordings
-  const titleWordCount = title.trim().split(/\s+/).length;
-  let albumTrackCandidates: AlbumTrackCandidate[] = [];
-
-  if (!artist && titleWordCount >= 2) {
-    const fallbackStartTime = performance.now();
-    albumTrackCandidates = await getReleaseTrackCandidates({
-      title,
-      artist: null,
-    });
-    const fallbackTime = performance.now() - fallbackStartTime;
-
-    if (albumTrackCandidates.length > 0 && debugInfo) {
-      debugInfo.stages.releaseTrackFallback = {
-        count: albumTrackCandidates.length,
-        timing: { ms: fallbackTime },
-      };
-    }
-  }
 
   // Keep recordings and album tracks separate - do NOT merge
   // Recordings will go through filtering and scoring
   // Album tracks will be scored separately and included in ambiguous results only
 
   // Step 3: Apply strict filters
+  // BUT: Preserve must-include candidates even if they fail filters
+  // Must-include is a recall guarantee - we can't let filters eliminate culturally obvious songs
   const filterStartTime = performance.now();
   let filtered = applyFilters(recordings, title);
+
+  // Identify must-include candidates BEFORE filtering removes them
+  // These are culturally obvious songs that must survive
+  const mustIncludeBeforeFilter = recordings.filter((rec) =>
+    isMustIncludeCandidate(rec, { title, artist }),
+  );
+
+  // Add must-include candidates back if they were filtered out
+  const filteredIds = new Set(filtered.map((r) => r.id));
+  const preservedIds: string[] = [];
+  for (const mustInclude of mustIncludeBeforeFilter) {
+    if (!filteredIds.has(mustInclude.id)) {
+      filtered.push(mustInclude);
+      preservedIds.push(mustInclude.id);
+    }
+  }
+
+  if (debugInfo && preservedIds.length > 0) {
+    (debugInfo.stages as Record<string, unknown>).mustIncludePreserved = {
+      count: preservedIds.length,
+      ids: preservedIds,
+    };
+  }
+
   const filterTime = performance.now() - filterStartTime;
 
   if (debugInfo) {
@@ -467,37 +881,13 @@ export async function searchCanonicalSong(
       .filter((w) => w.length > 0).length;
     const beforeWordCountFilter = filtered.length;
 
-    // Preserve release-track fallback candidates and canonical artists
+    // Preserve release-track fallback candidates
     // Track which recordings came from release-track fallback
     const releaseTrackFallbackArtists = new Set<string>();
     if (debugInfo?.stages.releaseTrackFallback) {
       // We can't easily track which specific recordings came from fallback,
-      // but we can preserve canonical artists
-      const canonicalArtists = [
-        "quincy jones",
-        "michael jackson",
-        "prince",
-        "madonna",
-        "david bowie",
-        "stevie wonder",
-        "aretha franklin",
-        "james brown",
-        "ray charles",
-        "frank sinatra",
-        "elvis presley",
-        "the beatles",
-        "rolling stones",
-        "led zeppelin",
-        "pink floyd",
-        "queen",
-        "fleetwood mac",
-        "eagles",
-        "van halen",
-        "ac/dc",
-      ];
-      for (const artist of canonicalArtists) {
-        releaseTrackFallbackArtists.add(artist);
-      }
+      // but we can preserve artists from release-track fallback
+      // (This is a small set, so we track them during fallback)
     }
 
     filtered = filtered.filter((rec) => {
@@ -506,12 +896,27 @@ export async function searchCanonicalSong(
         .filter((w) => w.length > 0);
       const wordCountMatch = recTitleWords.length === queryWordCount;
 
-      // Preserve canonical artists even if word count doesn't match exactly
+      // Preserve release-track fallback recordings even if word count doesn't match
       if (!wordCountMatch) {
         const recArtist = normalize(rec.artist);
-        for (const canonical of releaseTrackFallbackArtists) {
-          if (recArtist.includes(canonical) || canonical.includes(recArtist)) {
-            return true; // Preserve canonical artists
+        if (releaseTrackFallbackArtists.has(recArtist)) {
+          return true; // Preserve release-track fallback recordings
+        }
+
+        // Preserve must-include candidates (prominent artists, US album releases)
+        // Check if this would qualify as must-include
+        const recTitle = normalize(rec.title);
+        const qTitle = normalize(title);
+        if (recTitle === qTitle) {
+          // Exact title match - check for must-include signals
+          const hasUSAlbum = rec.releases.some(
+            (r) =>
+              r.primaryType?.toLowerCase() === "album" &&
+              r.country?.toUpperCase() === "US",
+          );
+          // Preserve if it has US album release (strong canonical signal)
+          if (hasUSAlbum) {
+            return true;
           }
         }
       }
@@ -589,9 +994,213 @@ export async function searchCanonicalSong(
     }
   }
 
-  // Step 5: Pick top recording results (already sorted by score)
-  let results = canonicalPick(scored, 5); // Get top 5
-  if (debugInfo) debugInfo.stages.results = results;
+  // Step 5: Assemble results with must-include guarantee
+  // Separate inclusion from ranking - must-include candidates are guaranteed
+  const MAX_RESULTS = 5;
+
+  // Get popular artists list for must-include identification
+  const popularArtistsList =
+    (debugInfo?.stages.popularArtistsList as string[]) || [];
+
+  // Identify must-include candidates BEFORE slicing
+  // Combine scored recordings and album tracks for identification
+  // Filter out recordings with null scores and ensure score is a number
+  const allScoredCandidates: ScoredCandidate[] = [
+    ...scored
+      .filter((r) => r.score !== null)
+      .map((r) => ({ ...r, score: r.score! })), // Assert non-null after filter
+    ...scoredAlbumTracks,
+  ];
+
+  // Identify canonical works that must be included
+  const canonicalWorks = await identifyMustIncludeCandidates(
+    allScoredCandidates,
+    title,
+    popularArtistsList,
+    debugInfo,
+  );
+
+  // Convert scored recordings to CanonicalResult format
+  const recordingResults = canonicalPick(scored, scored.length);
+
+  // Convert scored album tracks to CanonicalResult format
+  const albumTrackResults: CanonicalResult[] = scoredAlbumTracks.map((at) => ({
+    id: `album-track-${at.releaseId}`,
+    title: at.title,
+    artist: at.artist,
+    year: at.year,
+    releaseTitle: at.releaseTitle,
+    entityType: "album_track" as CanonicalResult["entityType"],
+    confidenceScore: at.score,
+    source: (at.source || "musicbrainz") as CanonicalResult["source"],
+    explanation: "Identified via album context",
+  }));
+
+  // Track recordings from artist-scoped search to prefer them over album tracks
+  const artistScopedRecordings = new Set<string>();
+  for (const rec of scored) {
+    if (
+      (rec as NormalizedRecording & { fromArtistScopedSearch?: boolean })
+        .fromArtistScopedSearch === true
+    ) {
+      const key = canonicalKey(rec.title, rec.artist);
+      artistScopedRecordings.add(key);
+    }
+  }
+
+  // Track which canonical works are satisfied by recordings vs album tracks
+  const canonicalWorksSatisfied = new Set<string>();
+
+  // Track recordings that were actually found in this search (for entity-aware handling and songCollapse)
+  // Use songKey to match what songCollapse uses
+  const recordingsFound = new Set<string>();
+  for (const result of recordingResults) {
+    if (result.entityType === "recording") {
+      const key = songKey(result.title, result.artist);
+      recordingsFound.add(key);
+    }
+  }
+
+  // Process recordings first - they take precedence
+  const allResults: CanonicalResult[] = [];
+  const seenIds = new Set<string>();
+
+  for (const result of recordingResults) {
+    if (seenIds.has(result.id)) continue;
+    seenIds.add(result.id);
+
+    const workKey = canonicalKey(result.title, result.artist);
+
+    // If this satisfies a canonical work, mark it
+    // Only mark as satisfied if it's actually a recording (not an album track)
+    if (canonicalWorks.has(workKey) && result.entityType === "recording") {
+      canonicalWorksSatisfied.add(workKey);
+    }
+
+    allResults.push(result);
+  }
+
+  // Process album tracks - add if they satisfy canonical works not yet satisfied
+  // OR if no recording exists for that canonical work
+  for (const result of albumTrackResults) {
+    if (seenIds.has(result.id)) continue;
+
+    const workKey = canonicalKey(result.title, result.artist);
+
+    // Check if there's already a recording for this canonical work in the current results
+    // Only skip if there's an actual recording that was found in this search
+    if (recordingsFound.has(workKey)) {
+      continue;
+    }
+
+    // Skip if there's a recording from artist-scoped search for the same canonical work
+    if (artistScopedRecordings.has(workKey)) {
+      continue;
+    }
+
+    // If this album track satisfies a canonical work, mark it
+    if (canonicalWorks.has(workKey)) {
+      canonicalWorksSatisfied.add(workKey);
+    }
+
+    seenIds.add(result.id);
+    allResults.push(result);
+  }
+
+  // Separate protected (canonical works) and unprotected candidates
+  const protectedResults: CanonicalResult[] = [];
+  const unprotectedResults: CanonicalResult[] = [];
+
+  for (const result of allResults) {
+    const workKey = canonicalKey(result.title, result.artist);
+
+    // Entity-aware handling: prefer recording over album_track ONLY if both exist for the SAME canonical work
+    // If no recording exists for this canonical work, the album track must be used
+    let finalResult = result;
+    if (result.entityType === "album_track" && canonicalWorks.has(workKey)) {
+      // Only replace with recording if a recording was actually found in this search
+      // This prevents test isolation issues where recordings from previous tests might be found
+      const songKeyForResult = songKey(result.title, result.artist);
+      if (recordingsFound.has(songKeyForResult)) {
+        const recordingResult = allResults.find(
+          (r) =>
+            r.entityType === "recording" &&
+            r.id !== result.id &&
+            canonicalKey(r.title, r.artist) === workKey,
+        );
+        if (recordingResult) {
+          // Prefer recording over album track only if it was found in this search
+          finalResult = recordingResult;
+        }
+      }
+      // If no recording exists for this canonical work, keep the album track
+    }
+
+    // Check if this result satisfies a canonical work
+    if (canonicalWorks.has(workKey)) {
+      protectedResults.push(finalResult);
+    } else {
+      unprotectedResults.push(finalResult);
+    }
+  }
+
+  // Sort unprotected by score (descending)
+  unprotectedResults.sort((a, b) => b.confidenceScore - a.confidenceScore);
+
+  // Build final results: protected first, then fill remaining slots with unprotected
+  const finalResults: CanonicalResult[] = [];
+  const remainingSlots = Math.max(0, MAX_RESULTS - protectedResults.length);
+
+  // Add all protected results (must-include candidates cannot be evicted)
+  finalResults.push(...protectedResults);
+
+  // Fill remaining slots with highest-scoring unprotected candidates
+  finalResults.push(...unprotectedResults.slice(0, remainingSlots));
+
+  // Sort final results: canonical works first, then by score
+  // Canonical works are already at the front, but ensure proper ordering
+  finalResults.sort((a, b) => {
+    const aKey = canonicalKey(a.title, a.artist);
+    const bKey = canonicalKey(b.title, b.artist);
+    const aIsCanonical = canonicalWorks.has(aKey);
+    const bIsCanonical = canonicalWorks.has(bKey);
+
+    // Canonical works come first
+    if (aIsCanonical && !bIsCanonical) return -1;
+    if (!aIsCanonical && bIsCanonical) return 1;
+
+    // Within same category, sort by score
+    return b.confidenceScore - a.confidenceScore;
+  });
+
+  // Track evicted candidates for debug logging
+  const evictedCandidates = unprotectedResults.slice(remainingSlots);
+
+  // Step: Collapse multiple candidates for the same song into a single representative
+  // This ensures we return one result per song (grouped by normalized title + primary artist)
+  // Pass recordingsFound to prevent preferring recordings from previous test runs
+  const collapsedResults = songCollapse(finalResults, recordingsFound);
+
+  let results = collapsedResults;
+  if (debugInfo) {
+    debugInfo.stages.results = results;
+    debugInfo.stages.songCollapse = {
+      before: finalResults.length,
+      after: collapsedResults.length,
+      collapsed: finalResults.length - collapsedResults.length,
+    };
+    debugInfo.stages.mustIncludeEnforcement = {
+      protectedCount: protectedResults.length,
+      canonicalWorks: Array.from(canonicalWorks),
+      canonicalWorksSatisfied: Array.from(canonicalWorksSatisfied),
+      evictedCandidates: evictedCandidates.map((r) => ({
+        id: r.id,
+        artist: r.artist,
+        title: r.title,
+        score: r.confidenceScore,
+      })),
+    };
+  }
   if (results.length === 0) {
     if (debug && debugInfo) {
       return { response: null, debugInfo };
@@ -613,46 +1222,29 @@ export async function searchCanonicalSong(
     queryLooksLikeSongTitle(title);
 
   if (allowWikipediaInference) {
-    const canonicalArtists = [
-      "quincy jones",
-      "michael jackson",
-      "prince",
-      "madonna",
-      "david bowie",
-      "stevie wonder",
-      "aretha franklin",
-      "james brown",
-      "ray charles",
-      "frank sinatra",
-      "elvis presley",
-      "the beatles",
-      "rolling stones",
-      "led zeppelin",
-      "pink floyd",
-      "queen",
-      "fleetwood mac",
-      "eagles",
-      "van halen",
-      "ac/dc",
-    ];
-
-    // Check if any result matches a canonical artist OR if album tracks were found
-    // Album tracks handle canonical artists (e.g., Quincy Jones), so Wikipedia inference
-    // is only needed if no canonical artist found in recordings AND no album tracks exist
-    const hasCanonicalArtist = results.some((result) => {
-      const normalizedArtist = normalize(result.artist);
-      return canonicalArtists.some(
-        (canonical) =>
-          normalizedArtist.includes(canonical) ||
-          canonical.includes(normalizedArtist),
-      );
+    // Check if results have strong signals (diverse releases, title tracks, etc.)
+    // Wikipedia inference is only needed if results are weak AND no album tracks exist
+    // Strong signals include: title tracks, multiple release types, older releases
+    const hasStrongSignals = results.some((result) => {
+      // Title track is a strong signal
+      if (
+        result.releaseTitle &&
+        normalize(result.title) === normalize(result.releaseTitle)
+      ) {
+        return true;
+      }
+      // Older releases (pre-2000) are more likely canonical
+      if (result.year && parseInt(result.year) < 2000) {
+        return true;
+      }
+      return false;
     });
 
     // Only try Wikipedia inference if:
-    // - No canonical artist found in recordings
-    // - No album tracks were found (album tracks handle canonical artists)
+    // - No strong signals found in recordings
+    // - No album tracks were found (album tracks handle canonical songs)
     // This prevents redundant Wikipedia lookups when album tracks already provide the answer
-    if (!hasCanonicalArtist && albumTrackCandidates.length === 0) {
+    if (!hasStrongSignals && albumTrackCandidates.length === 0) {
       const wikiStartTime = performance.now();
       const wikiResult = await searchWikipediaTrack(title);
 
@@ -808,105 +1400,37 @@ export async function searchCanonicalSong(
   }
 
   // Decide response mode:
-  // Return canonical ONLY if:
-  //   - Artist provided in query, OR
-  //   - Single-word query with score gap >= CANONICAL_SCORE_GAP
-  // Multi-word title-only queries MUST return ambiguous mode
-  // Decide canonical mode:
-  // - Artist provided: always canonical
-  // - Single-word with multiple results: canonical only if score gap >= threshold
-  // - Single-word with single result: canonical
-  const shouldReturnCanonical =
-    artistProvided ||
-    (isSingleWordQuery && results.length === 1) ||
-    (isSingleWordQuery &&
-      results.length > 1 &&
-      scoreGap >= CANONICAL_SCORE_GAP);
+  // Never force canonical for title-only queries unless exactly one canonical work exists
+  // Prominence is a seatbelt - guarantees inclusion but never forces canonical alone
+  // Canonical mode only allowed when:
+  //   - Artist explicitly provided, OR
+  //   - Exactly one canonical work exists (culturally unambiguous)
+  // If multiple canonical works exist, force ambiguous mode
+  const totalCanonicalWorksCount = canonicalWorks.size;
+  const hasMultipleCanonicalWorks = totalCanonicalWorksCount >= 2;
 
-  // Convert scored album tracks to CanonicalResult format
-  const albumTrackResults: CanonicalResult[] = scoredAlbumTracks
-    .slice(0, 2) // Top 1-2 album tracks
-    .map((at) => ({
-      id: `album-track-${at.releaseId}`,
-      title: at.title,
-      artist: at.artist,
-      year: at.year,
-      releaseTitle: at.releaseTitle,
-      entityType: "album_track" as const,
-      confidenceScore: at.score,
-      source: "musicbrainz" as const,
-      explanation: "Identified via album context",
-    }));
-
-  // Enforce ambiguity for multi-word title-only queries
-  // This prevents over-canonicalization when artist is not provided
-  // Include album tracks in ambiguous results
-  if (!artistProvided && !isSingleWordQuery) {
-    // Combine recordings and album tracks for ambiguous results
-    // Album tracks should appear after recordings but within top results
-    const maxResults = 5;
-    const recordingsIncluded = Math.min(results.length, 3);
-    const albumTracksIncluded = Math.min(
-      albumTrackResults.length,
-      maxResults - recordingsIncluded,
-    );
-    const combinedResults = [
-      ...results.slice(0, recordingsIncluded),
-      ...albumTrackResults.slice(0, albumTracksIncluded),
-    ]
-      .slice(0, maxResults)
-      .sort((a, b) => b.confidenceScore - a.confidenceScore);
-
-    const response: SearchResponse = {
-      mode: "ambiguous",
-      results: combinedResults,
-    };
-
-    if (debugInfo) {
-      debugInfo.stages.responseMode = "ambiguous";
-      debugInfo.stages.ambiguousResultsCount = combinedResults.length;
-      debugInfo.stages.albumTracksIncluded = albumTracksIncluded;
-      debugInfo.stages.albumTracksTotal = scoredAlbumTracks.length;
-
-      // Final selection debug summary
-      debugInfo.stages.finalSelection = {
-        maxResults,
-        recordingsIncluded,
-        albumTracksIncluded,
-        albumTracksTotal: scoredAlbumTracks.length,
-        reason:
-          albumTracksIncluded > 0
-            ? `Included ${albumTracksIncluded} album track(s) in ambiguous results for multi-word title-only query`
-            : "No album tracks included - recordings only",
-      };
-
-      debugInfo.stages.ambiguityReason =
-        "Multi-word title-only query - requires explicit artist for canonical result";
-
-      // Update entity resolution with decision
-      if (debugInfo.stages.entityResolution) {
-        const entityRes = debugInfo.stages.entityResolution as Record<
-          string,
-          unknown
-        >;
-        entityRes.decision = "ambiguous";
-        entityRes.reason =
-          recordingCount > 0
-            ? "Recording entities dominate without artist disambiguation"
-            : "Mixed entity types require explicit artist for canonical result";
-      }
-    }
-
-    if (debug && debugInfo) {
-      return { response, debugInfo };
-    }
-    return response;
-  }
+  // Never return canonical for title-only queries (multi-word or single-word)
+  // Title-only queries are inherently ambiguous - require explicit artist for canonical
+  let shouldReturnCanonical =
+    artistProvided &&
+    (totalCanonicalWorksCount === 1 || results.length === 1) &&
+    !hasMultipleCanonicalWorks; // Multiple canonical works = ambiguous
 
   if (shouldReturnCanonical) {
     // Single canonical result
-    // Do NOT include album tracks in canonical mode
-    if (debugInfo) {
+    // Do NOT include album tracks in canonical mode - filter to recordings only
+    // For title-only queries, canonical mode should only return recordings
+    const canonicalResults = results.filter(
+      (r) => r.entityType === "recording",
+    );
+    if (canonicalResults.length === 0) {
+      // No recordings available - fall back to ambiguous
+      shouldReturnCanonical = false;
+    } else {
+      results = canonicalResults;
+    }
+
+    if (shouldReturnCanonical && debugInfo) {
       debugInfo.stages.finalSelection = {
         maxResults: 1,
         recordingsIncluded: 1,
@@ -1003,12 +1527,11 @@ export async function searchCanonicalSong(
     }
     return response;
   } else {
-    // Ambiguous query - return top 5 results
+    // Ambiguous query - return top results
     // This branch handles:
-    // - Multi-word title-only queries (always ambiguous)
+    // - Multi-word title-only queries (always ambiguous, album tracks already merged above)
     // - Single-word queries with close scores (score gap < CANONICAL_SCORE_GAP)
-    // Album tracks are NOT included here (only in multi-word title-only branch above)
-    const maxResults = 5;
+    const maxResults = !artistProvided && !isSingleWordQuery ? 10 : 5;
     const response: SearchResponse = {
       mode: "ambiguous",
       results: results.slice(0, maxResults),
@@ -1026,12 +1549,25 @@ export async function searchCanonicalSong(
         ? `Single-word query with close scores (gap: ${scoreGap} < ${CANONICAL_SCORE_GAP})`
         : "Multi-word title-only query - requires explicit artist for canonical result";
 
+      const albumTracksIncluded =
+        !artistProvided && !isSingleWordQuery
+          ? (debugInfo.stages.albumTracksIncluded as number) || 0
+          : 0;
+
+      const recordingsIncluded = Math.min(
+        results.filter((r) => r.entityType === "recording").length,
+        maxResults - albumTracksIncluded,
+      );
+
       debugInfo.stages.finalSelection = {
         maxResults,
-        recordingsIncluded: Math.min(results.length, maxResults),
-        albumTracksIncluded: 0,
+        recordingsIncluded,
+        albumTracksIncluded,
         albumTracksTotal: scoredAlbumTracks.length,
-        reason,
+        reason:
+          albumTracksIncluded > 0
+            ? `Included ${albumTracksIncluded} album track(s) in ambiguous results`
+            : reason,
       };
 
       // Update entity resolution with decision
