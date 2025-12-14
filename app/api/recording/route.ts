@@ -5,6 +5,7 @@ import {
   lookupReleaseGroup,
 } from "@/lib/musicbrainz";
 import { normalizeRecording } from "@/lib/openai";
+import { logCreditsResponse } from "@/lib/logger";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -59,6 +60,9 @@ export async function GET(req: Request) {
       releaseGroup,
       allowInferred,
     });
+
+    // Log last 3 credits payloads returned (summary only)
+    await logCreditsResponse({ id, allowInferred, normalized: clean });
     return NextResponse.json(clean);
   } catch (err) {
     console.error("Recording error:", err);

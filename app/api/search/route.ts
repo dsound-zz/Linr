@@ -6,7 +6,7 @@
 
 import { NextResponse } from "next/server";
 import { searchCanonicalSong } from "@/lib/search";
-import { logSearchDebugInfo } from "@/lib/logger";
+import { logSearchQuery } from "@/lib/logger";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -30,12 +30,8 @@ export async function GET(req: Request) {
       );
       console.log("[SEARCH] Debug info:", JSON.stringify(debugInfo, null, 2));
 
-      // Write debug info to JSONL file (overwrites each time)
-      await logSearchDebugInfo(
-        q,
-        debugInfo,
-        response?.mode === "canonical" ? response.result : response?.results,
-      );
+      // Log last 3 search queries (with debug summary)
+      await logSearchQuery({ query: q, response, debugInfo });
       if (!response) {
         return NextResponse.json({ mode: "canonical", results: [], debugInfo });
       }
@@ -56,16 +52,19 @@ export async function GET(req: Request) {
     const response = await searchCanonicalSong(q);
 
     if (!response) {
+      await logSearchQuery({ query: q, response: null });
       return NextResponse.json({ mode: "canonical", results: [] });
     }
 
     if (response.mode === "canonical") {
+      await logSearchQuery({ query: q, response });
       return NextResponse.json({
         mode: "canonical",
         results: [response.result],
       });
     }
 
+    await logSearchQuery({ query: q, response });
     return NextResponse.json({
       mode: "ambiguous",
       results: response.results,
