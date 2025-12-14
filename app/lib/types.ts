@@ -70,6 +70,7 @@ export interface MusicBrainzRelease {
   disambiguation?: string;
   "release-group"?: MusicBrainzReleaseGroup;
   relations?: MusicBrainzRelation[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }
 
@@ -87,6 +88,7 @@ export interface MusicBrainzRecording {
   releases?: MusicBrainzRelease[];
   artist?: string; // Sometimes added by our code
   relations?: MusicBrainzRelation[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }
 
@@ -124,6 +126,7 @@ export interface MusicBrainzRelation {
       iso_3166_1_codes?: string[];
     };
   };
-  work?: any;
+  work?: unknown;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }

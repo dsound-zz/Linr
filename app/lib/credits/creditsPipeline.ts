@@ -14,6 +14,15 @@ import { normalizeCredits } from "./normalizeCredits";
 import { mergeCredits, sortCredits } from "./mergeCredits";
 import type { CreditsEntity, RecordingCredits } from "./types";
 
+const SPARSE_MISSING_ROLES = [
+  "producer",
+  "writer",
+  "composer",
+  "mixer",
+  "recording_engineer",
+  "performer", // Include to catch instrument roles from Wikipedia
+] as const;
+
 /**
  * Resolve credits for a music entity
  *
@@ -43,14 +52,7 @@ export async function resolveCredits(
   // Include "performer" in missing roles for sparse data to catch instrument roles
   const missingRoles =
     normalizedMBCredits.length < 3
-      ? ([
-          "producer",
-          "writer",
-          "composer",
-          "mixer",
-          "recording_engineer",
-          "performer", // Include to catch instrument roles from Wikipedia
-        ] as const)
+      ? [...SPARSE_MISSING_ROLES]
       : detectMissingRoles(normalizedMBCredits) || [];
 
   // Step 4: Fetch Wikipedia credits only if needed

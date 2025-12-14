@@ -1,5 +1,29 @@
-const cache = new Map<string, Promise<{ personnel: { name: string; role: string }[] }>>();
-const searchCache = new Map<string, Promise<any | null>>();
+const cache = new Map<
+  string,
+  Promise<{ personnel: { name: string; role: string }[] }>
+>();
+const searchCache = new Map<string, Promise<unknown | null>>();
+
+type WikipediaSearchResponse = {
+  query?: {
+    search?: Array<{ title?: string; pageid?: number }>;
+  };
+};
+
+type WikipediaParseResponse = {
+  parse?: {
+    text?: string;
+  };
+};
+
+type WikipediaSummaryResponse = {
+  pageid?: number;
+  title?: string;
+  extract?: string;
+  titles?: {
+    normalized?: string;
+  };
+};
 
 function decodeHtml(html: string): string {
   return html
@@ -15,7 +39,9 @@ function decodeHtml(html: string): string {
     .trim();
 }
 
-function extractPersonnelFromHtml(html: string): { name: string; role: string }[] {
+function extractPersonnelFromHtml(
+  html: string,
+): { name: string; role: string }[] {
   const lower = html.toLowerCase();
   const headingRegex =
     /<h[2-4][^>]*>\s*<span[^>]*id="[^"]*personnel[^"]*"[^>]*>.*?<\/span>\s*<\/h[2-4]>/i;
@@ -25,7 +51,9 @@ function extractPersonnelFromHtml(html: string): { name: string; role: string }[
   const start = headingMatch.index + headingMatch[0].length;
   const nextHeadingIdx = lower.indexOf("<h2", start);
   const section =
-    nextHeadingIdx === -1 ? html.slice(start) : html.slice(start, nextHeadingIdx);
+    nextHeadingIdx === -1
+      ? html.slice(start)
+      : html.slice(start, nextHeadingIdx);
 
   const items: { name: string; role: string }[] = [];
   const liRegex = /<li[^>]*>([\s\S]*?)<\/li>/gi;
@@ -38,7 +66,10 @@ function extractPersonnelFromHtml(html: string): { name: string; role: string }[
     const split = text.split(/–|-/, 2);
     if (split.length === 2) {
       const name = split[0].trim();
-      const roles = split[1].split(/,|;|\//).map((r) => r.trim()).filter(Boolean);
+      const roles = split[1]
+        .split(/,|;|\//)
+        .map((r) => r.trim())
+        .filter(Boolean);
       if (name) {
         if (roles.length === 0) {
           items.push({ name, role: "personnel" });
@@ -54,7 +85,10 @@ function extractPersonnelFromHtml(html: string): { name: string; role: string }[
   return items;
 }
 
-async function fetchWikipediaPageTitle(title: string, artist: string): Promise<string | null> {
+async function fetchWikipediaPageTitle(
+  title: string,
+  artist: string,
+): Promise<string | null> {
   const candidates = [
     `${title} ${artist} song`,
     `${title} ${artist}`,
@@ -68,7 +102,7 @@ async function fetchWikipediaPageTitle(title: string, artist: string): Promise<s
     )}&format=json&srlimit=1`;
     const res = await fetch(url);
     if (!res.ok) continue;
-    const json = (await res.json()) as any;
+    const json = (await res.json()) as WikipediaSearchResponse;
     const first = json?.query?.search?.[0];
     if (first?.title) return first.title;
   }
@@ -94,7 +128,7 @@ export async function getWikipediaPersonnel(
     )}&prop=text&format=json&formatversion=2`;
     const res = await fetch(url);
     if (!res.ok) return { personnel: [] };
-    const json = (await res.json()) as any;
+    const json = (await res.json()) as WikipediaParseResponse;
     const html = json?.parse?.text;
     if (!html || typeof html !== "string") return { personnel: [] };
 
@@ -124,13 +158,7 @@ function parseSummaryYear(summary: string | undefined): string | null {
 
 export async function searchWikipediaTrack(
   query: string,
-): Promise<{
-  id: string;
-  title: string;
-  artist: string;
-  year: string | null;
-  source: string;
-}> {
+): Promise<unknown | null> {
   const key = query.toLowerCase().trim();
   if (searchCache.has(key)) {
     const cached = await searchCache.get(key)!;
@@ -143,7 +171,7 @@ export async function searchWikipediaTrack(
     )}&format=json&srlimit=1`;
     const res = await fetch(searchUrl);
     if (!res.ok) return null;
-    const json = (await res.json()) as any;
+    const json = (await res.json()) as WikipediaSearchResponse;
     const first = json?.query?.search?.[0];
     if (!first?.title) return null;
 
@@ -152,11 +180,13 @@ export async function searchWikipediaTrack(
     )}`;
     const sRes = await fetch(summaryUrl);
     if (!sRes.ok) return null;
-    const summary = (await sRes.json()) as any;
+    const summary = (await sRes.json()) as WikipediaSummaryResponse;
 
     const artist =
       parseSummaryArtist(summary?.extract) ??
-      (summary?.titles?.normalized ?? summary?.title ?? "Unknown artist");
+      summary?.titles?.normalized ??
+      summary?.title ??
+      "Unknown artist";
     const year = parseSummaryYear(summary?.extract);
 
     return {
@@ -170,5 +200,5 @@ export async function searchWikipediaTrack(
 
   searchCache.set(key, task);
   const result = await task;
-  return result as any;
+  return result;
 }

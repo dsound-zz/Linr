@@ -450,8 +450,8 @@ function mergeNormalized(
   if (!ai) return base;
 
   return {
-    title: mergeString(base.title, ai.title),
-    artist: mergeString(base.artist, ai.artist),
+    title: mergeString(base.title, ai.title) || base.title || "",
+    artist: mergeString(base.artist, ai.artist) || base.artist || "",
     release: {
       title: mergeString(base.release.title, ai.release?.title) || null,
       date: mergeString(base.release.date, ai.release?.date) || null,

@@ -53,8 +53,20 @@ function extractRecordingCredits(recording: MusicBrainzRecording): Credit[] {
     const role = normalizeMBRole(type);
     if (!role) continue;
 
-    const artist = rel.artist || rel["target-credit"];
-    const name = artist?.name || rel.name || "";
+    const artistRef: unknown = rel.artist ?? rel["target-credit"] ?? rel.name;
+    let name = "";
+    if (typeof artistRef === "string") {
+      name = artistRef;
+    } else if (
+      artistRef &&
+      typeof artistRef === "object" &&
+      "name" in artistRef &&
+      typeof (artistRef as { name?: unknown }).name === "string"
+    ) {
+      name = (artistRef as { name: string }).name;
+    } else if (typeof rel.name === "string") {
+      name = rel.name;
+    }
     if (!name) continue;
 
     // Extract instrument from attributes if present
@@ -88,8 +100,20 @@ function extractReleaseCredits(release: MusicBrainzRelease): Credit[] {
     const role = normalizeMBRole(type);
     if (!role) continue;
 
-    const artist = rel.artist || rel["target-credit"];
-    const name = artist?.name || rel.name || "";
+    const artistRef: unknown = rel.artist ?? rel["target-credit"] ?? rel.name;
+    let name = "";
+    if (typeof artistRef === "string") {
+      name = artistRef;
+    } else if (
+      artistRef &&
+      typeof artistRef === "object" &&
+      "name" in artistRef &&
+      typeof (artistRef as { name?: unknown }).name === "string"
+    ) {
+      name = (artistRef as { name: string }).name;
+    } else if (typeof rel.name === "string") {
+      name = rel.name;
+    }
     if (!name) continue;
 
     credits.push({

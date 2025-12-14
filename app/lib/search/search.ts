@@ -289,8 +289,10 @@ export async function searchReleaseByTitle(
 
     // Sort by date (earliest first)
     albumReleases.sort((a, b) => {
-      const dateA = a.date ?? a["first-release-date"] ?? "";
-      const dateB = b.date ?? b["first-release-date"] ?? "";
+      const aAny = a as unknown as Record<string, string | undefined>;
+      const bAny = b as unknown as Record<string, string | undefined>;
+      const dateA = a.date ?? aAny["first-release-date"] ?? "";
+      const dateB = b.date ?? bAny["first-release-date"] ?? "";
       return dateA.localeCompare(dateB);
     });
 

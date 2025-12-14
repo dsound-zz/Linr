@@ -218,7 +218,14 @@ export async function lookupRecording(
 ): Promise<MusicBrainzRecording> {
   const mb = getMBClient();
 
-  const recording = await mb.lookup("recording", id, [
+  const lookup = mb.lookup as unknown as (
+    this: unknown,
+    entity: string,
+    mbid: string,
+    inc: string[],
+  ) => Promise<unknown>;
+
+  const recording = (await lookup.call(mb, "recording", id, [
     "artists",
     "artist-rels",
     "recording-rels",
@@ -227,18 +234,25 @@ export async function lookupRecording(
     "releases",
     "isrcs",
     "place-rels",
-  ]);
+  ])) as MusicBrainzRecording;
 
   // Log the raw response before returning
   await logMusicBrainzResponse("lookup", recording, undefined, id);
 
-  return recording as MusicBrainzRecording;
+  return recording;
 }
 
 export async function lookupRelease(id: string): Promise<MusicBrainzRelease> {
   const mb = getMBClient();
 
-  const release = await mb.lookup("release", id, [
+  const lookup = mb.lookup as unknown as (
+    this: unknown,
+    entity: string,
+    mbid: string,
+    inc: string[],
+  ) => Promise<unknown>;
+
+  const release = (await lookup.call(mb, "release", id, [
     "artist-rels",
     "recording-rels",
     "label-rels",
@@ -246,23 +260,40 @@ export async function lookupRelease(id: string): Promise<MusicBrainzRelease> {
     "url-rels",
     "work-rels",
     "work-level-rels",
-  ]);
+  ])) as MusicBrainzRelease;
 
-  await logMusicBrainzResponse("lookup", release, undefined, id);
+  await logMusicBrainzResponse(
+    "lookup",
+    release as unknown as MusicBrainzRecording,
+    undefined,
+    id,
+  );
 
-  return release as MusicBrainzRelease;
+  return release;
 }
 
-export async function lookupReleaseGroup(id: string): Promise<any> {
+export async function lookupReleaseGroup(id: string): Promise<unknown> {
   const mb = getMBClient();
 
-  const releaseGroup = await mb.lookup("release-group", id, [
+  const lookup = mb.lookup as unknown as (
+    this: unknown,
+    entity: string,
+    mbid: string,
+    inc: string[],
+  ) => Promise<unknown>;
+
+  const releaseGroup = await lookup.call(mb, "release-group", id, [
     "artist-rels",
     "url-rels",
     "place-rels",
   ]);
 
-  await logMusicBrainzResponse("lookup", releaseGroup, undefined, id);
+  await logMusicBrainzResponse(
+    "lookup",
+    releaseGroup as unknown as MusicBrainzRecording,
+    undefined,
+    id,
+  );
 
   return releaseGroup;
 }

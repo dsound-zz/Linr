@@ -39,7 +39,12 @@ export async function searchWikipediaTrack(
       const res = await fetch(searchUrl);
       if (!res.ok) return null;
 
-      const json = (await res.json()) as any;
+      type WikipediaSearchResponse = {
+        query?: {
+          search?: Array<{ title?: string; pageid?: number }>;
+        };
+      };
+      const json = (await res.json()) as WikipediaSearchResponse;
       const first = json?.query?.search?.[0];
       if (!first?.title) return null;
 
@@ -49,7 +54,12 @@ export async function searchWikipediaTrack(
       const sRes = await fetch(summaryUrl);
       if (!sRes.ok) return null;
 
-      const summary = (await sRes.json()) as any;
+      type WikipediaSummaryResponse = {
+        pageid?: number;
+        title?: string;
+        extract?: string;
+      };
+      const summary = (await sRes.json()) as WikipediaSummaryResponse;
 
       // Parse artist from summary
       let artist = parseSummaryArtist(summary?.extract);

@@ -125,8 +125,17 @@ export async function getReleaseTrackCandidates(
     });
 
     // Merge releases found from recordings with direct release search
-    const directReleases = result.releases ?? [];
-    const releasesMap = new Map<string, (typeof directReleases)[0]>();
+    type ReleaseLike = {
+      id?: string;
+      title?: string;
+      date?: string;
+      country?: string;
+      [key: string]: unknown;
+    };
+
+    const directReleases =
+      (result as unknown as { releases?: ReleaseLike[] }).releases ?? [];
+    const releasesMap = new Map<string, ReleaseLike>();
 
     // Add direct search results
     for (const r of directReleases) {
@@ -144,7 +153,11 @@ export async function getReleaseTrackCandidates(
         // Limit to 20 to avoid too many API calls
         if (releasesMap.has(releaseId)) continue; // Already have it
         try {
-          const releaseDetail = await mb.lookup("release", releaseId, []);
+          const releaseDetail = (await mb.lookup(
+            "release",
+            releaseId,
+            [],
+          )) as unknown as ReleaseLike;
           if (releaseDetail.id) {
             releasesMap.set(releaseDetail.id, releaseDetail);
           }
@@ -171,15 +184,37 @@ export async function getReleaseTrackCandidates(
     );
     console.log("[RELEASE TRACK FALLBACK] Found releases:", releases.length);
     if (releases.length > 0) {
+      const getArtistName = (r: ReleaseLike): string => {
+        const ac = r["artist-credit"];
+        if (!Array.isArray(ac) || ac.length === 0) return "unknown";
+        const first = ac[0] as unknown;
+        if (typeof first === "string") return first;
+        if (first && typeof first === "object") {
+          const obj = first as Record<string, unknown>;
+          const directName = obj.name;
+          if (typeof directName === "string" && directName) return directName;
+          const artistObj = obj.artist;
+          if (artistObj && typeof artistObj === "object") {
+            const a = artistObj as Record<string, unknown>;
+            const n = a.name;
+            if (typeof n === "string" && n) return n;
+          }
+        }
+        return "unknown";
+      };
+
+      const getPrimaryType = (r: ReleaseLike): unknown => {
+        const rg = r["release-group"];
+        if (!rg || typeof rg !== "object") return null;
+        return (rg as Record<string, unknown>)["primary-type"] ?? null;
+      };
+
       const sampleReleases = releases.slice(0, 10).map((r) => ({
         id: r.id,
         title: r.title,
-        artist:
-          r["artist-credit"]?.[0]?.name ||
-          r["artist-credit"]?.[0]?.artist?.name ||
-          "unknown",
+        artist: getArtistName(r),
         date: r.date,
-        primaryType: r["release-group"]?.["primary-type"],
+        primaryType: getPrimaryType(r),
       }));
       console.log(
         "[RELEASE TRACK FALLBACK] Sample releases:",
@@ -196,9 +231,14 @@ export async function getReleaseTrackCandidates(
 
     // Filter to Album releases only (more canonical)
     const albumReleases = releases.filter((r) => {
+      const rg = r["release-group"];
       const primaryType =
-        r["release-group"]?.["primary-type"]?.toLowerCase() ?? "";
-      return primaryType === "album";
+        rg && typeof rg === "object"
+          ? (rg as Record<string, unknown>)["primary-type"]
+          : null;
+      const primaryTypeLower =
+        typeof primaryType === "string" ? primaryType.toLowerCase() : "";
+      return primaryTypeLower === "album";
     });
 
     console.log(
@@ -209,10 +249,24 @@ export async function getReleaseTrackCandidates(
       const albumReleaseSamples = albumReleases.slice(0, 10).map((r) => ({
         id: r.id,
         title: r.title,
-        artist:
-          r["artist-credit"]?.[0]?.name ||
-          r["artist-credit"]?.[0]?.artist?.name ||
-          "unknown",
+        artist: (() => {
+          const ac = r["artist-credit"];
+          if (!Array.isArray(ac) || ac.length === 0) return "unknown";
+          const first = ac[0] as unknown;
+          if (typeof first === "string") return first;
+          if (first && typeof first === "object") {
+            const obj = first as Record<string, unknown>;
+            const directName = obj.name;
+            if (typeof directName === "string" && directName) return directName;
+            const artistObj = obj.artist;
+            if (artistObj && typeof artistObj === "object") {
+              const a = artistObj as Record<string, unknown>;
+              const n = a.name;
+              if (typeof n === "string" && n) return n;
+            }
+          }
+          return "unknown";
+        })(),
         date: r.date,
       }));
       console.log(
