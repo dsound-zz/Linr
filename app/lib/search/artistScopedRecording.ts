@@ -8,7 +8,7 @@
 
 import { searchByTitleAndArtist } from "./search";
 import { normalizeRecordings } from "./normalize";
-import { normalizeArtistName, artistsMatch } from "./utils/normalizeArtist";
+import { artistsMatch } from "./utils/normalizeArtist";
 import type { NormalizedRecording } from "./types";
 
 /**

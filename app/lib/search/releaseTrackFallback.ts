@@ -499,17 +499,22 @@ export async function discoverAlbumTracks(params: {
   let releasesScanned = 0;
   let tracksScanned = 0;
   const matchedArtists = new Set<string>();
+  const startedAt = performance.now();
 
-  console.log(
-    "[ALBUM TRACK DISCOVERY] Scanning tracks for:",
-    {
-      title,
-      candidateArtists: candidateArtists.length,
-    },
-  );
+  // Hard caps to prevent pathological latency in production.
+  // This discovery runs on the request path, so it must be bounded.
+  const MAX_ARTISTS = 8;
+  const MAX_RELEASES_PER_ARTIST = 15;
+  const MAX_TOTAL_RELEASES = 80;
+  const MAX_TOTAL_MATCHES = 20;
+
+  console.log("[ALBUM TRACK DISCOVERY] Scanning tracks for:", {
+    title,
+    candidateArtists: candidateArtists.length,
+  });
 
   // For each candidate artist, search their releases and scan tracks
-  for (const artist of candidateArtists.slice(0, 10)) {
+  for (const artist of candidateArtists.slice(0, MAX_ARTISTS)) {
     // Limit to top 10 artists to avoid too many API calls
     try {
       // Search releases by artist (albums and singles only)
@@ -518,7 +523,7 @@ export async function discoverAlbumTracks(params: {
         `[ALBUM TRACK DISCOVERY] Searching releases for artist: ${artist}`,
       );
 
-      // Paginate through releases (up to 100)
+      // Paginate through releases (bounded)
       let offset = 0;
       const limit = 100;
       let hasMore = true;
@@ -536,8 +541,8 @@ export async function discoverAlbumTracks(params: {
           break;
         }
 
-        // Lookup each release to get tracklist
-        for (const release of releases) {
+        // Lookup each release to get tracklist (bounded per-artist and overall)
+        for (const release of releases.slice(0, MAX_RELEASES_PER_ARTIST)) {
           if (!release.id) continue;
 
           try {
@@ -546,6 +551,9 @@ export async function discoverAlbumTracks(params: {
             ]);
 
             releasesScanned++;
+            if (releasesScanned >= MAX_TOTAL_RELEASES) {
+              hasMore = false;
+            }
             const media = releaseDetail.media ?? [];
             const releaseArtistCreditRaw =
               release["artist-credit"] ?? releaseDetail["artist-credit"] ?? [];
@@ -620,8 +628,20 @@ export async function discoverAlbumTracks(params: {
                   console.log(
                     `[ALBUM TRACK DISCOVERY] Found matching track: "${trackTitle}" by ${artistName} (release: ${release.title ?? releaseDetail.title})`,
                   );
+
+                  // Once we find a match on a release, we can stop scanning more
+                  // releases for this artist. songCollapse will dedupe anyway.
+                  hasMore = false;
+                  break;
                 }
               }
+              if (!hasMore) break;
+            }
+            if (!hasMore) break;
+
+            if (albumTrackCandidates.length >= MAX_TOTAL_MATCHES) {
+              hasMore = false;
+              break;
             }
           } catch (err) {
             console.error(
@@ -644,8 +664,12 @@ export async function discoverAlbumTracks(params: {
       );
       continue;
     }
+
+    if (releasesScanned >= MAX_TOTAL_RELEASES) break;
+    if (albumTrackCandidates.length >= MAX_TOTAL_MATCHES) break;
   }
 
+  const elapsedMs = performance.now() - startedAt;
   console.log(
     `[ALBUM TRACK DISCOVERY] Completed: ${albumTrackCandidates.length} tracks found (${releasesScanned} releases scanned, ${tracksScanned} tracks scanned)`,
   );
@@ -658,6 +682,13 @@ export async function discoverAlbumTracks(params: {
       matchesFound: albumTrackCandidates.length,
       matchedArtists: Array.from(matchedArtists),
       candidateArtists: candidateArtists.length,
+      ms: elapsedMs,
+      caps: {
+        maxArtists: MAX_ARTISTS,
+        maxReleasesPerArtist: MAX_RELEASES_PER_ARTIST,
+        maxTotalReleases: MAX_TOTAL_RELEASES,
+        maxTotalMatches: MAX_TOTAL_MATCHES,
+      },
     };
   }
 

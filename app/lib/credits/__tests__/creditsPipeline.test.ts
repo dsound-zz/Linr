@@ -24,8 +24,10 @@ type WikipediaPersonnelItem = { name: string; role: string };
 const { mockGetWikipediaPersonnel, mockSearchWikipediaTrack } = vi.hoisted(
   () => ({
     mockGetWikipediaPersonnel: vi.fn(
-      async (_title: string, _artist: string): Promise<WikipediaPersonnelItem[]> =>
-        [],
+      async (
+        _title: string,
+        _artist: string,
+      ): Promise<WikipediaPersonnelItem[]> => [],
     ),
     mockSearchWikipediaTrack: vi.fn(
       async (_query: string): Promise<unknown | null> => null,

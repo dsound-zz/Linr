@@ -2146,5 +2146,462 @@ describe("Canonical Song Search Pipeline", () => {
           arianaResult?.entityType === "album_track",
       ).toBe(true);
     });
+
+    it("includes Kelly Clarkson for 'since you\\'ve been gone' (title variant)", async () => {
+      mockMBClient.search.mockImplementation(
+        (entityType: string, params: MBSearchParams) => {
+          if (entityType !== "recording") {
+            return Promise.resolve({ [entityType]: [], count: 0 });
+          }
+
+          const q = String(params?.query ?? "");
+          // Original query returns lots of covers but not Kelly
+          if (
+            q === "since you've been gone" ||
+            q === "since you’ve been gone"
+          ) {
+            return Promise.resolve({
+              recordings: [
+                {
+                  id: "recording-cover-1",
+                  title: "Since You've Been Gone",
+                  "artist-credit": [{ name: "Alcatrazz" }],
+                  releases: [
+                    {
+                      id: "release-cover-1",
+                      title: "Some Album",
+                      date: "1984",
+                      country: "US",
+                      "release-group": { "primary-type": "Album" },
+                    },
+                  ],
+                  score: 100,
+                },
+              ],
+              count: 1,
+            });
+          }
+
+          // Variant query catches the Kelly Clarkson canonical recording title
+          if (q === "since u been gone") {
+            return Promise.resolve({
+              recordings: [
+                {
+                  id: "recording-kelly-since-u-been-gone",
+                  title: "Since U Been Gone",
+                  "artist-credit": [{ name: "Kelly Clarkson" }],
+                  releases: [
+                    {
+                      id: "release-kelly-breakaway",
+                      title: "Breakaway",
+                      date: "2004-11-30",
+                      country: "US",
+                      "release-group": { "primary-type": "Album" },
+                    },
+                  ],
+                  score: 100,
+                },
+              ],
+              count: 1,
+            });
+          }
+
+          return Promise.resolve({ recordings: [], count: 0 });
+        },
+      );
+
+      const result = await searchCanonicalSong("since you've been gone", false);
+      expect(result).not.toBeNull();
+      if (!result) return;
+
+      const response: SearchResponse =
+        "response" in result
+          ? (result.response as SearchResponse)
+          : (result as SearchResponse);
+
+      // Build results regardless of canonical/ambiguous mode
+      const results = getResults(response);
+
+      const hasKelly = results.some(
+        (r) =>
+          r.artist.toLowerCase().includes("kelly clarkson") &&
+          r.title.toLowerCase().includes("since"),
+      );
+      expect(hasKelly).toBe(true);
+    });
+
+    it("includes Kelly Clarkson for 'since u you been gone' (typo resilience)", async () => {
+      mockMBClient.search.mockImplementation(
+        (entityType: string, params: MBSearchParams) => {
+          if (entityType !== "recording") {
+            return Promise.resolve({ [entityType]: [], count: 0 });
+          }
+
+          const q = String(params?.query ?? "");
+
+          // Original typo query returns a cover but not Kelly
+          if (q === "since u you been gone") {
+            return Promise.resolve({
+              recordings: [
+                {
+                  id: "recording-cover-typo-1",
+                  title: "Since You've Been Gone",
+                  "artist-credit": [{ name: "Alcatrazz" }],
+                  releases: [
+                    {
+                      id: "release-cover-typo-1",
+                      title: "Some Album",
+                      date: "1984",
+                      country: "US",
+                      "release-group": { "primary-type": "Album" },
+                    },
+                  ],
+                  score: 100,
+                },
+              ],
+              count: 1,
+            });
+          }
+
+          // Variant query catches the Kelly Clarkson canonical recording title
+          if (q === "since u been gone") {
+            return Promise.resolve({
+              recordings: [
+                {
+                  id: "recording-kelly-since-u-been-gone",
+                  title: "Since U Been Gone",
+                  "artist-credit": [{ name: "Kelly Clarkson" }],
+                  releases: [
+                    {
+                      id: "release-kelly-breakaway",
+                      title: "Breakaway",
+                      date: "2004-11-30",
+                      country: "US",
+                      "release-group": { "primary-type": "Album" },
+                    },
+                  ],
+                  score: 100,
+                },
+              ],
+              count: 1,
+            });
+          }
+
+          return Promise.resolve({ recordings: [], count: 0 });
+        },
+      );
+
+      const result = await searchCanonicalSong("since u you been gone", false);
+      expect(result).not.toBeNull();
+      if (!result) return;
+
+      const response: SearchResponse =
+        "response" in result
+          ? (result.response as SearchResponse)
+          : (result as SearchResponse);
+
+      const results = getResults(response);
+      expect(
+        results.some((r) => r.artist.toLowerCase().includes("kelly clarkson")),
+      ).toBe(true);
+    });
+
+    it("finds canonical results via slang expansion (luv/u -> love/you)", async () => {
+      mockMBClient.search.mockImplementation(
+        (entityType: string, params: MBSearchParams) => {
+          if (entityType !== "recording") {
+            return Promise.resolve({ [entityType]: [], count: 0 });
+          }
+
+          const q = String(params?.query ?? "");
+
+          // Slang query: returns a non-canonical cover
+          if (q === "i luv u") {
+            return Promise.resolve({
+              recordings: [
+                {
+                  id: "recording-cover-luv-u",
+                  title: "I Luv U",
+                  "artist-credit": [{ name: "Cover Artist" }],
+                  releases: [
+                    {
+                      id: "release-cover-luv-u",
+                      title: "Covers Vol. 1",
+                      date: "2010",
+                      country: "US",
+                      "release-group": { "primary-type": "Album" },
+                    },
+                  ],
+                  score: 100,
+                },
+              ],
+              count: 1,
+            });
+          }
+
+          // Canonicalized variant query: returns the intended track
+          if (q === "i love you") {
+            return Promise.resolve({
+              recordings: [
+                {
+                  id: "recording-canonical-i-love-you",
+                  title: "I Love You",
+                  "artist-credit": [{ name: "Canonical Artist" }],
+                  releases: [
+                    {
+                      id: "release-canonical-i-love-you",
+                      title: "Canonical Album",
+                      date: "2005-01-01",
+                      country: "US",
+                      "release-group": { "primary-type": "Album" },
+                    },
+                  ],
+                  score: 100,
+                },
+              ],
+              count: 1,
+            });
+          }
+
+          return Promise.resolve({ recordings: [], count: 0 });
+        },
+      );
+
+      const result = await searchCanonicalSong("i luv u", false);
+      expect(result).not.toBeNull();
+      if (!result) return;
+
+      const response: SearchResponse =
+        "response" in result
+          ? (result.response as SearchResponse)
+          : (result as SearchResponse);
+
+      const results = getResults(response);
+      expect(
+        results.some((r) =>
+          r.artist.toLowerCase().includes("canonical artist"),
+        ),
+      ).toBe(true);
+    });
+
+    it("includes Steely Dan for 'aja' (single-word exact match should not be crowded out)", async () => {
+      mockMBClient.search.mockImplementation(
+        (entityType: string, params: MBSearchParams) => {
+          if (entityType !== "recording") {
+            return Promise.resolve({ [entityType]: [], count: 0 });
+          }
+
+          // Single-word path uses quoted exact title search.
+          const q = String(params?.query ?? "");
+          if (
+            !q.includes('recording:"Aja"') &&
+            !q.includes('recording:"aja"')
+          ) {
+            return Promise.resolve({ recordings: [], count: 0 });
+          }
+
+          return Promise.resolve({
+            recordings: [
+              {
+                id: "aja-woody-herman",
+                title: "Aja",
+                "artist-credit": [{ name: "Woody Herman" }],
+                releases: [
+                  {
+                    id: "release-woody-aja",
+                    title: "Aja",
+                    date: "1978-01-01",
+                    country: "US",
+                    "release-group": { "primary-type": "Album" },
+                  },
+                ],
+                score: 100,
+              },
+              {
+                id: "aja-steely-dan",
+                title: "Aja",
+                "artist-credit": [{ name: "Steely Dan" }],
+                releases: [
+                  {
+                    id: "release-steely-aja",
+                    title: "Aja",
+                    date: "1977-09-23",
+                    country: "US",
+                    "release-group": { "primary-type": "Album" },
+                  },
+                  {
+                    id: "release-steely-aja-single",
+                    title: "Aja",
+                    date: "1977",
+                    country: "US",
+                    "release-group": { "primary-type": "Single" },
+                  },
+                ],
+                score: 95,
+              },
+              // A few other exact matches that should not crowd out Steely Dan
+              {
+                id: "aja-random-1",
+                title: "Aja",
+                "artist-credit": [{ name: "Random Artist 1" }],
+                releases: [
+                  {
+                    id: "release-random-1",
+                    title: "Aja",
+                    date: "2014-01-01",
+                    country: "FR",
+                    "release-group": { "primary-type": "Album" },
+                  },
+                ],
+                score: 98,
+              },
+              {
+                id: "aja-random-2",
+                title: "Aja",
+                "artist-credit": [{ name: "Random Artist 2" }],
+                releases: [
+                  {
+                    id: "release-random-2",
+                    title: "Aja",
+                    date: "2018-01-01",
+                    country: "DE",
+                    "release-group": { "primary-type": "Album" },
+                  },
+                ],
+                score: 97,
+              },
+              {
+                id: "aja-random-3",
+                title: "Aja",
+                "artist-credit": [{ name: "Random Artist 3" }],
+                releases: [
+                  {
+                    id: "release-random-3",
+                    title: "Aja",
+                    date: "2020-01-01",
+                    country: "JP",
+                    "release-group": { "primary-type": "Album" },
+                  },
+                ],
+                score: 96,
+              },
+            ],
+            count: 5,
+          });
+        },
+      );
+
+      const result = await searchCanonicalSong("aja", false);
+      expect(result).not.toBeNull();
+      if (!result) return;
+
+      const response: SearchResponse =
+        "response" in result
+          ? (result.response as SearchResponse)
+          : (result as SearchResponse);
+
+      const results = getResults(response);
+      expect(
+        results.some((r) => r.artist.toLowerCase().includes("steely dan")),
+      ).toBe(true);
+    });
+
+    it("includes Oasis for 'champagne supernova' (compilation releases should not exclude studio track)", async () => {
+      mockMBClient.search.mockImplementation(
+        (entityType: string, params: MBSearchParams) => {
+          if (entityType !== "recording") {
+            return Promise.resolve({ [entityType]: [], count: 0 });
+          }
+
+          const q = String(params?.query ?? "");
+          if (q !== "champagne supernova") {
+            return Promise.resolve({ recordings: [], count: 0 });
+          }
+
+          const makeHighScoringCover = (i: number) => ({
+            id: `recording-cover-${i}`,
+            title: "Champagne Supernova",
+            "artist-credit": [{ name: `Cover Artist ${i}` }],
+            releases: [
+              {
+                id: `release-cover-${i}`,
+                title: "Champagne Supernova",
+                date: "2010-01-01",
+                country: "US",
+                // Title-track boost path
+                "release-group": {
+                  "primary-type": "Album",
+                  "secondary-types": [],
+                },
+              },
+            ],
+            score: 100,
+          });
+
+          return Promise.resolve({
+            recordings: [
+              // A bunch of plausible covers that could otherwise crowd the top-N
+              ...Array.from({ length: 10 }, (_, i) =>
+                makeHighScoringCover(i + 1),
+              ),
+              // Canonical Oasis recording (note compilation secondary type on one release-group)
+              {
+                id: "recording-oasis-champagne-supernova",
+                title: "Champagne Supernova",
+                "artist-credit": [{ name: "Oasis" }],
+                releases: [
+                  {
+                    id: "release-oasis-wtsmg",
+                    title: "(What's the Story) Morning Glory?",
+                    date: "1995-10-02",
+                    country: "GB",
+                    "release-group": {
+                      "primary-type": "Album",
+                      "secondary-types": [],
+                    },
+                  },
+                  {
+                    id: "release-oasis-single",
+                    title: "Champagne Supernova",
+                    date: "1996-03-11",
+                    country: "GB",
+                    "release-group": {
+                      "primary-type": "Single",
+                      "secondary-types": [],
+                    },
+                  },
+                  {
+                    id: "release-oasis-comp",
+                    title: "Some Compilation",
+                    date: "2006-01-01",
+                    country: "US",
+                    "release-group": {
+                      "primary-type": "Album",
+                      "secondary-types": ["Compilation"],
+                    },
+                  },
+                ],
+                score: 100,
+              },
+            ],
+            count: 11,
+          });
+        },
+      );
+
+      const result = await searchCanonicalSong("champagne supernova", false);
+      expect(result).not.toBeNull();
+      if (!result) return;
+
+      const response: SearchResponse =
+        "response" in result
+          ? (result.response as SearchResponse)
+          : (result as SearchResponse);
+
+      const results = getResults(response);
+      expect(results.some((r) => r.artist.toLowerCase() === "oasis")).toBe(
+        true,
+      );
+    });
   });
 });

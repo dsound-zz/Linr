@@ -32,6 +32,25 @@ export function scoreRecording(
 
   const recTitle = normalize(recording.title);
   const qTitle = normalize(query.title);
+  const releases = recording.releases;
+
+  // Prefer signals from non-compilation releases.
+  // A canonical studio track often appears on compilations; compilations should not
+  // disqualify it, and should not dominate scoring when better releases exist.
+  const isCompilationRelease = (r: {
+    primaryType: string | null;
+    secondaryTypes: string[];
+  }): boolean => {
+    const primary = (r.primaryType ?? "").toLowerCase();
+    if (primary === "compilation") return true;
+    return r.secondaryTypes.some((t) => t.toLowerCase() === "compilation");
+  };
+
+  const nonCompilationReleases = releases.filter(
+    (r) => !isCompilationRelease(r),
+  );
+  const scoringReleases =
+    nonCompilationReleases.length > 0 ? nonCompilationReleases : releases;
 
   // Title matching (highest priority)
   if (recTitle && qTitle) {
@@ -94,14 +113,15 @@ export function scoreRecording(
 
     // Release diversity boost: artists with multiple diverse releases are likely more canonical
     // This complements prominence scoring
-    const releases = recording.releases;
     const uniqueReleaseTypes = new Set(
-      releases.map((r) => r.primaryType?.toLowerCase()).filter(Boolean),
+      scoringReleases.map((r) => r.primaryType?.toLowerCase()).filter(Boolean),
     );
-    const uniqueYears = new Set(releases.map((r) => r.year).filter(Boolean));
+    const uniqueYears = new Set(
+      scoringReleases.map((r) => r.year).filter(Boolean),
+    );
     const hasMultipleReleaseTypes = uniqueReleaseTypes.size >= 2; // Album + Single
     const hasMultipleYears = uniqueYears.size >= 2; // Released across multiple years
-    const hasMultipleReleases = releases.length >= 3; // Multiple releases total
+    const hasMultipleReleases = scoringReleases.length >= 3; // Multiple releases total
 
     // Boost for recordings with diverse release history (indicates canonical status)
     if (hasMultipleReleaseTypes && hasMultipleReleases) {
@@ -125,11 +145,10 @@ export function scoreRecording(
   }
 
   // Release type bonuses
-  const releases = recording.releases;
-  const hasAlbum = releases.some(
+  const hasAlbum = scoringReleases.some(
     (r) => r.primaryType?.toLowerCase() === "album",
   );
-  const hasSingle = releases.some(
+  const hasSingle = scoringReleases.some(
     (r) => r.primaryType?.toLowerCase() === "single",
   );
 
@@ -138,7 +157,7 @@ export function scoreRecording(
 
   // Album-title prominence boost: title track from canonical album
   // If recording title matches release title, it's likely the title track
-  const isTitleTrack = releases.some((r) => {
+  const isTitleTrack = scoringReleases.some((r) => {
     if (!r.title) return false;
     return normalize(r.title) === recTitle;
   });
@@ -147,7 +166,7 @@ export function scoreRecording(
   }
 
   // Earliest release year (older songs get slight boost for cultural recognition)
-  const years = releases
+  const years = scoringReleases
     .map((r) => (r.year ? parseInt(r.year) : null))
     .filter((y): y is number => y !== null && !isNaN(y));
 
@@ -163,7 +182,7 @@ export function scoreRecording(
 
   if (isSingleWordQuery && isExactTitleMatch) {
     const isStudio = isStudioRecording(recording);
-    const hasAlbum = releases.some(
+    const hasAlbum = scoringReleases.some(
       (r) => r.primaryType?.toLowerCase() === "album",
     );
     const isStudioAlbum = isStudio && hasAlbum;
@@ -171,7 +190,7 @@ export function scoreRecording(
     const hasReleaseYearBetween1980And1990 = years.some(
       (y) => y >= 1980 && y <= 1990,
     );
-    const hasUSRelease = releases.some(
+    const hasUSRelease = scoringReleases.some(
       (r) => r.country?.toUpperCase() === "US",
     );
 

@@ -246,8 +246,8 @@ function isMustIncludeCandidate(
   rec: NormalizedRecording,
   query: { title: string; artist?: string | null },
 ): boolean {
-  const recTitle = normalize(rec.title);
-  const qTitle = normalize(query.title);
+  const recTitle = normalizeTitleKey(rec.title);
+  const qTitle = normalizeTitleKey(query.title);
 
   // 1. Must have exact normalized title match OR recording title starts with query title
   // This handles cases like "Side to Side (feat. Nicki Minaj)" matching "Side to Side"
@@ -349,7 +349,7 @@ type ScoredCandidate =
  */
 function canonicalKey(title: string, artist: string): string {
   const normalized = normalizeArtistName(artist);
-  return `${normalize(title)}::${normalize(normalized.primary)}`;
+  return `${normalizeTitleKey(title)}::${normalize(normalized.primary)}`;
 }
 
 /**
@@ -358,7 +358,117 @@ function canonicalKey(title: string, artist: string): string {
  */
 function songKey(title: string, artist: string): string {
   const normalized = normalizeArtistName(artist);
-  return `${normalize(title)}::${normalize(normalized.primary)}`;
+  return `${normalizeTitleKey(title)}::${normalize(normalized.primary)}`;
+}
+
+/**
+ * Normalize a title specifically for keying/grouping.
+ *
+ * This is slightly more opinionated than the general `normalize()`:
+ * - Treats common contraction/shortcut variants as equivalent (e.g., "you've" ~ "u")
+ *
+ * Example:
+ * - "Since You've Been Gone" -> "since you been gone"
+ * - "Since U Been Gone"      -> "since you been gone"
+ */
+function normalizeTitleKey(title: string): string {
+  const canonical = title.replace(/’/g, "'").toLowerCase();
+
+  // Token-level canonicalization for common abbreviations / slang used in titles.
+  // Keep this conservative (mostly 1:1 token swaps) to avoid exploding search space
+  // or changing word counts in surprising ways.
+  const tokenMap: Record<string, string> = {
+    // you-forms
+    u: "you",
+    ya: "you",
+    // love-forms
+    luv: "love",
+    // your-forms
+    ur: "your",
+    // conjunction shorthand
+    n: "and",
+  };
+
+  const rawTokens = canonical.split(/\s+/).filter(Boolean);
+  const tokens = rawTokens.map((t) => {
+    // you've / youve -> you
+    const youve = t.replace(/\byou'?ve\b/g, "you");
+    return tokenMap[youve] ?? youve;
+  });
+
+  // Collapse duplicate adjacent tokens (e.g. "u you" -> "you", "you you" -> "you")
+  const collapsed: string[] = [];
+  for (const tok of tokens) {
+    const prev = collapsed[collapsed.length - 1];
+    if (prev && prev === tok) continue;
+    collapsed.push(tok);
+  }
+
+  return normalize(collapsed.join(" "));
+}
+
+/**
+ * Generate a small set of alternate title spellings for discovery.
+ * Used to catch cases like "Since You've Been Gone" vs "Since U Been Gone".
+ */
+function titleVariants(title: string): string[] {
+  const variants = new Set<string>();
+  variants.add(title);
+
+  const asciiApos = title.replace(/’/g, "'");
+  variants.add(asciiApos);
+
+  function collapseAdjacentDuplicates(s: string): string {
+    const toks = s.split(/\s+/).filter(Boolean);
+    const out: string[] = [];
+    for (const tok of toks) {
+      const prev = out[out.length - 1];
+      if (prev && prev.toLowerCase() === tok.toLowerCase()) continue;
+      out.push(tok);
+    }
+    return out.join(" ");
+  }
+
+  function applyTokenMap(s: string, map: Record<string, string>): string {
+    const toks = s.split(/\s+/).filter(Boolean);
+    const mapped = toks.map((tok) => {
+      const lower = tok.toLowerCase();
+      // Normalize apostrophes inside token for matching
+      const normalized = lower.replace(/’/g, "'");
+      return (
+        map[normalized] ?? map[normalized.replace(/\byou'?ve\b/g, "you")] ?? tok
+      );
+    });
+    return collapseAdjacentDuplicates(mapped.join(" "));
+  }
+
+  // Prefer "u"/"luv"/"ur"/"n" (helps match canonical stylized titles)
+  const slangifyMap: Record<string, string> = {
+    "you've": "u",
+    youve: "u",
+    you: "u",
+    ya: "u",
+    love: "luv",
+    your: "ur",
+    and: "n",
+  };
+  // Prefer "you"/"love"/"your"/"and" (helps match spelled-out titles)
+  const canonicalizeMap: Record<string, string> = {
+    u: "you",
+    ya: "you",
+    "you've": "you",
+    youve: "you",
+    luv: "love",
+    ur: "your",
+    n: "and",
+  };
+
+  const slangForm = applyTokenMap(asciiApos, slangifyMap);
+  const canonicalForm = applyTokenMap(asciiApos, canonicalizeMap);
+  variants.add(slangForm);
+  variants.add(canonicalForm);
+
+  return Array.from(variants).filter(Boolean);
 }
 
 /**
@@ -448,7 +558,7 @@ async function identifyMustIncludeCandidates(
     stages: Record<string, unknown>;
   } | null,
 ): Promise<Set<string>> {
-  const normalizedTitle = normalize(title);
+  const normalizedTitle = normalizeTitleKey(title);
   const canonicalWorks = new Set<string>();
   const artistWikipediaCache = new Map<string, Promise<boolean>>();
 
@@ -460,7 +570,7 @@ async function identifyMustIncludeCandidates(
   for (const candidate of candidates) {
     // Check if it's a recording or album track
     const isAlbumTrack = "releaseId" in candidate;
-    const candidateTitle = normalize(candidate.title);
+    const candidateTitle = normalizeTitleKey(candidate.title);
     const titleMatches = candidateTitle === normalizedTitle;
 
     if (!titleMatches) continue;
@@ -490,7 +600,7 @@ async function identifyMustIncludeCandidates(
     if (
       isAlbumTrack &&
       candidate.releaseTitle &&
-      normalize(candidate.releaseTitle) === normalizedTitle
+      normalizeTitleKey(candidate.releaseTitle) === normalizedTitle
     ) {
       shouldInclude = true;
     }
@@ -627,6 +737,7 @@ export async function searchCanonicalSong(
   // Step 1: Parse query
   const { title, artist } = parseUserQuery(query);
   const isSingleWordQuery = title.trim().split(/\s+/).length === 1;
+  const artistProvided = Boolean(artist);
 
   const debugInfo: DebugInfo | null = debug
     ? {
@@ -677,7 +788,18 @@ export async function searchCanonicalSong(
     } else {
       // Multi-word queries - search recordings first, then discover album tracks
       // Album tracks are first-class candidates for modern pop songs
-      rawRecordings = await searchByTitle(title);
+      // Also try a small set of title variants (e.g., "you've" -> "u")
+      const variants = titleVariants(title);
+      const variantRecordings = await Promise.all(
+        variants.map((t) => searchByTitle(t)),
+      );
+      const dedupRaw = new Map<string, MusicBrainzRecording>();
+      for (const list of variantRecordings) {
+        for (const rec of list) {
+          if (rec?.id) dedupRaw.set(rec.id, rec);
+        }
+      }
+      rawRecordings = Array.from(dedupRaw.values());
       recordings = normalizeRecordings(rawRecordings);
 
       // Derive candidate artists from recording search results
@@ -876,7 +998,7 @@ export async function searchCanonicalSong(
   // and let scoring prefer exact matches rather than filtering them out
   if (!artist && !isSingleWordQuery) {
     // Multi-word queries: apply word-count filter
-    const queryWordCount = normalize(title)
+    const queryWordCount = normalizeTitleKey(title)
       .split(/\s+/)
       .filter((w) => w.length > 0).length;
     const beforeWordCountFilter = filtered.length;
@@ -891,7 +1013,7 @@ export async function searchCanonicalSong(
     }
 
     filtered = filtered.filter((rec) => {
-      const recTitleWords = normalize(rec.title)
+      const recTitleWords = normalizeTitleKey(rec.title)
         .split(/\s+/)
         .filter((w) => w.length > 0);
       const wordCountMatch = recTitleWords.length === queryWordCount;
@@ -1002,23 +1124,39 @@ export async function searchCanonicalSong(
   const popularArtistsList =
     (debugInfo?.stages.popularArtistsList as string[]) || [];
 
-  // Identify must-include candidates BEFORE slicing
-  // Combine scored recordings and album tracks for identification
-  // Filter out recordings with null scores and ensure score is a number
-  const allScoredCandidates: ScoredCandidate[] = [
-    ...scored
-      .filter((r) => r.score !== null)
-      .map((r) => ({ ...r, score: r.score! })), // Assert non-null after filter
-    ...scoredAlbumTracks,
-  ];
+  // Identify must-include candidates BEFORE slicing.
+  //
+  // IMPORTANT: For title-only single-word queries, "must-include" is too permissive
+  // (many artists have Wikipedia pages and many recordings match exactly), which can
+  // crowd out the culturally obvious result. For those queries we rely on scoring
+  // (exact-match + prominence) rather than hard-protecting works.
+  let canonicalWorks = new Set<string>();
+  if (!artistProvided && isSingleWordQuery) {
+    if (debugInfo) {
+      (debugInfo.stages as Record<string, unknown>).mustIncludeIdentification =
+        {
+          skipped: true,
+          reason:
+            "Skipped for title-only single-word queries to avoid over-protecting many exact matches",
+        };
+    }
+  } else {
+    // Combine scored recordings and album tracks for identification
+    // Filter out recordings with null scores and ensure score is a number
+    const allScoredCandidates: ScoredCandidate[] = [
+      ...scored
+        .filter((r) => r.score !== null)
+        .map((r) => ({ ...r, score: r.score! })), // Assert non-null after filter
+      ...scoredAlbumTracks,
+    ];
 
-  // Identify canonical works that must be included
-  const canonicalWorks = await identifyMustIncludeCandidates(
-    allScoredCandidates,
-    title,
-    popularArtistsList,
-    debugInfo,
-  );
+    canonicalWorks = await identifyMustIncludeCandidates(
+      allScoredCandidates,
+      title,
+      popularArtistsList,
+      debugInfo,
+    );
+  }
 
   // Convert scored recordings to CanonicalResult format
   const recordingResults = canonicalPick(scored, scored.length);
@@ -1211,7 +1349,6 @@ export async function searchCanonicalSong(
   // Step 5.5: Late-stage Wikipedia fallback
   // Only when: MusicBrainz returns results, none match canonical artists, no explicit artist query
   // AND query looks like a song title (not live/remix/version)
-  const artistProvided = Boolean(artist);
   const topResult = results[0];
   const confidence = topResult.confidenceScore;
 

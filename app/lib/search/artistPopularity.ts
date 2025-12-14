@@ -26,7 +26,7 @@ const POPULAR_ARTISTS_CACHE_TTL_MS = 3600000; // 1 hour
  */
 async function getArtistRecordingCount(artistName: string): Promise<number> {
   const cacheKey = cacheKeyArtist(`recording-count:${artistName}`);
-  const cached = getCached<number>(cacheKey);
+  const cached = await getCached<number>(cacheKey);
   if (cached !== null) return cached;
 
   try {
@@ -38,7 +38,7 @@ async function getArtistRecordingCount(artistName: string): Promise<number> {
     });
 
     const count = result.count ?? 0;
-    setCached(cacheKey, count);
+    void setCached(cacheKey, count);
     return count;
   } catch (err) {
     console.error(`Failed to get recording count for ${artistName}:`, err);
@@ -53,7 +53,7 @@ export async function checkWikipediaPresence(
   artistName: string,
 ): Promise<boolean> {
   const cacheKey = cacheKeyArtist(`wikipedia:${artistName}`);
-  const cached = getCached<boolean>(cacheKey);
+  const cached = await getCached<boolean>(cacheKey);
   if (cached !== null) return cached;
 
   try {
@@ -63,7 +63,7 @@ export async function checkWikipediaPresence(
     )}&format=json&srlimit=1`;
     const res = await fetch(searchUrl);
     if (!res.ok) {
-      setCached(cacheKey, false);
+      void setCached(cacheKey, false);
       return false;
     }
     type WikipediaSearchResponse = {
@@ -74,11 +74,11 @@ export async function checkWikipediaPresence(
     const json = (await res.json()) as WikipediaSearchResponse;
     const first = json?.query?.search?.[0];
     const hasWikipedia = typeof first?.title === "string";
-    setCached(cacheKey, hasWikipedia);
+    void setCached(cacheKey, hasWikipedia);
     return hasWikipedia;
   } catch (err) {
     console.error(`Failed to check Wikipedia for ${artistName}:`, err);
-    setCached(cacheKey, false);
+    void setCached(cacheKey, false);
     return false;
   }
 }

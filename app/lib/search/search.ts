@@ -24,7 +24,7 @@ export async function searchByTitle(
   limit = 200,
 ): Promise<MusicBrainzRecording[]> {
   const cacheKey = cacheKeyRecording(`title:${title}:${limit}`);
-  const cached = getCached<MusicBrainzRecording[]>(cacheKey);
+  const cached = await getCached<MusicBrainzRecording[]>(cacheKey);
   if (cached) return cached;
 
   const mb = getMBClient();
@@ -52,6 +52,7 @@ export async function searchByTitle(
       if (rawRecordings.length < pageSize) break;
     }
 
+    void setCached(cacheKey, recordings);
     return recordings;
   }
 
@@ -131,7 +132,7 @@ export async function searchByTitle(
   // Let the pipeline handle filtering and scoring
   console.log(`[MB SEARCH] Total recordings returned: ${recordings.length}`);
   const result = recordings.slice(0, limit);
-  setCached(cacheKey, result);
+  void setCached(cacheKey, result);
   return result;
 }
 
@@ -187,7 +188,7 @@ export async function searchExactRecordingTitle(
   title: string,
 ): Promise<MusicBrainzRecording[]> {
   const cacheKey = cacheKeyRecording(`exact:${title}`);
-  const cached = getCached<MusicBrainzRecording[]>(cacheKey);
+  const cached = await getCached<MusicBrainzRecording[]>(cacheKey);
   if (cached) return cached;
 
   const mb = getMBClient();
@@ -223,7 +224,7 @@ export async function searchExactRecordingTitle(
   }
 
   const result = recordings;
-  setCached(cacheKey, result);
+  void setCached(cacheKey, result);
   return result;
 }
 
@@ -237,7 +238,7 @@ export async function searchByTitleAndArtist(
   limit = 50,
 ): Promise<MusicBrainzRecording[]> {
   const cacheKey = cacheKeyRecording(`title:${title}`, artist);
-  const cached = getCached<MusicBrainzRecording[]>(cacheKey);
+  const cached = await getCached<MusicBrainzRecording[]>(cacheKey);
   if (cached) return cached;
 
   const mb = getMBClient();
@@ -245,7 +246,7 @@ export async function searchByTitleAndArtist(
   const result = await mb.search("recording", { query, limit });
 
   const recordings = result.recordings ?? [];
-  setCached(cacheKey, recordings);
+  void setCached(cacheKey, recordings);
   return recordings;
 }
 
@@ -258,7 +259,7 @@ export async function searchReleaseByTitle(
   title: string,
 ): Promise<MusicBrainzRecording[]> {
   const cacheKey = cacheKeyRelease(`exact:${title}`);
-  const cached = getCached<MusicBrainzRecording[]>(cacheKey);
+  const cached = await getCached<MusicBrainzRecording[]>(cacheKey);
   if (cached) return cached;
 
   const mb = getMBClient();
@@ -346,7 +347,7 @@ export async function searchReleaseByTitle(
       }
     }
 
-    setCached(cacheKey, recordings);
+    void setCached(cacheKey, recordings);
     return recordings;
   } catch (err) {
     console.error("Release search failed:", err);
@@ -365,7 +366,7 @@ export async function searchByTitleAndArtistName(
   limit = 25,
 ): Promise<MusicBrainzRecording[]> {
   const cacheKey = cacheKeyRecording(`exact:${title}`, artist);
-  const cached = getCached<MusicBrainzRecording[]>(cacheKey);
+  const cached = await getCached<MusicBrainzRecording[]>(cacheKey);
   if (cached) return cached;
 
   const mb = getMBClient();
@@ -376,7 +377,7 @@ export async function searchByTitleAndArtistName(
   try {
     const result = await mb.search("recording", { query, limit });
     const recordings = result.recordings ?? [];
-    setCached(cacheKey, recordings);
+    void setCached(cacheKey, recordings);
     return recordings;
   } catch (err) {
     console.error(`Search failed for "${title}" by "${artist}":`, err);

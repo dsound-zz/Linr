@@ -15,8 +15,18 @@ const mockMBClient = {
   lookup: vi.fn(),
 };
 
-const mockGetWikipediaPersonnel = vi.fn(() => Promise.resolve([]));
-const mockSearchWikipediaTrack = vi.fn(() => Promise.resolve(null));
+const { mockGetWikipediaPersonnel, mockSearchWikipediaTrack } = vi.hoisted(
+  () => ({
+    mockGetWikipediaPersonnel: vi.fn(async () => []),
+    mockSearchWikipediaTrack: vi.fn(async () => null),
+  }),
+);
+
+type MBSearchParams = {
+  query?: string;
+  offset?: number;
+  limit?: number;
+};
 
 vi.mock("../../musicbrainz", () => ({
   getMBClient: vi.fn(() => mockMBClient),
@@ -33,8 +43,8 @@ vi.mock("../../musicbrainz", () => ({
 }));
 
 vi.mock("../wikipedia", () => ({
-  getWikipediaPersonnel: (...args: any[]) => mockGetWikipediaPersonnel(...args),
-  searchWikipediaTrack: (...args: any[]) => mockSearchWikipediaTrack(...args),
+  getWikipediaPersonnel: mockGetWikipediaPersonnel,
+  searchWikipediaTrack: mockSearchWikipediaTrack,
 }));
 
 vi.mock("../openai", () => ({
@@ -43,8 +53,8 @@ vi.mock("../openai", () => ({
 
 // Mock cache to prevent cached empty results
 vi.mock("../cache", () => ({
-  getCached: vi.fn(() => null), // Always return null (no cache hit)
-  setCached: vi.fn(),
+  getCached: vi.fn(async () => null), // Always return null (no cache hit)
+  setCached: vi.fn(async () => {}),
   cacheKeyRecording: vi.fn((key: string) => key),
   cacheKeyRelease: vi.fn((key: string) => key),
   cacheKeyArtist: vi.fn((key: string) => key),
@@ -131,7 +141,7 @@ describe("Pipeline Prominence Integration", () => {
     // Mock paginated search responses
     // Handle both exact search (quoted query) and regular search
     mockMBClient.search.mockImplementation(
-      (entityType: string, params: any) => {
+      (entityType: string, params: MBSearchParams) => {
         if (entityType === "recording") {
           const offset = params?.offset || 0;
           // Return recordings for any recording search (tests are isolated)
@@ -249,7 +259,7 @@ describe("Pipeline Prominence Integration", () => {
 
     // Mock paginated search responses
     mockMBClient.search.mockImplementation(
-      (entityType: string, params: any) => {
+      (entityType: string, params: MBSearchParams) => {
         if (entityType === "recording") {
           const offset = params?.offset || 0;
           if (offset === 0) {
@@ -354,7 +364,7 @@ describe("Pipeline Prominence Integration", () => {
 
     // Mock paginated search responses
     mockMBClient.search.mockImplementation(
-      (entityType: string, params: any) => {
+      (entityType: string, params: MBSearchParams) => {
         if (entityType === "recording") {
           const offset = params?.offset || 0;
           if (offset === 0) {
@@ -452,7 +462,7 @@ describe("Pipeline Prominence Integration", () => {
 
     // Mock paginated search responses
     mockMBClient.search.mockImplementation(
-      (entityType: string, params: any) => {
+      (entityType: string, params: MBSearchParams) => {
         if (entityType === "recording") {
           const offset = params?.offset || 0;
           if (offset === 0) {

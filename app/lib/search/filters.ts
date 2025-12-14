@@ -46,15 +46,20 @@ export function isStudioRecording(recording: NormalizedRecording): boolean {
   const releases = recording.releases;
 
   // Check release secondary types
-  const hasBadSecondaryType = releases.some((r) =>
-    r.secondaryTypes.some((t) =>
-      ["live", "remix", "dj-mix", "mixtape", "compilation"].includes(
-        t.toLowerCase(),
-      ),
-    ),
-  );
+  //
+  // IMPORTANT:
+  // A canonical studio track often appears on compilations.
+  // We should only reject the recording if *all* of its releases are "non-studio-ish"
+  // (live/remix/dj-mix/mixtape), not merely because one compilation release exists.
+  const badSecondaryTypes = new Set(["live", "remix", "dj-mix", "mixtape"]);
+  const hasAnyRelease = releases.length > 0;
+  const allReleasesAreBadSecondary =
+    hasAnyRelease &&
+    releases.every((r) =>
+      r.secondaryTypes.some((t) => badSecondaryTypes.has(t.toLowerCase())),
+    );
 
-  if (hasBadSecondaryType) return false;
+  if (allReleasesAreBadSecondary) return false;
 
   // Check title for bad keywords
   const badKeywords = [
