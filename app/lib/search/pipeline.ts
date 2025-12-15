@@ -63,8 +63,11 @@ async function applyCanonicalBias(
 ): Promise<NormalizedRecording[]> {
   if (recordings.length === 0) return recordings;
 
-  // Check Wikipedia for each candidate (in parallel, limit to top 20 for performance)
-  const candidatesToCheck = recordings.slice(0, 20);
+  // Check Wikipedia for each candidate (in parallel).
+  //
+  // NOTE: This can dominate latency on mobile connections. Keep this small and rely
+  // more heavily on scoring heuristics + MusicBrainz signals.
+  const candidatesToCheck = recordings.slice(0, 6);
   const wikiChecks = await Promise.all(
     candidatesToCheck.map(async (rec) => {
       const query = `${rec.title} ${rec.artist}`;
@@ -126,6 +129,10 @@ async function expandWithProminentArtists(
   title: string,
   existingRecordings: MusicBrainzRecording[],
 ): Promise<MusicBrainzRecording[]> {
+  // If we already have a healthy candidate set from MusicBrainz, skip expensive
+  // prominent-artist expansion (this can trigger 30+ additional MB searches).
+  if (existingRecordings.length >= 25) return existingRecordings;
+
   // Small cached list of prominent artists across genres
   const prominentArtists = [
     // Rock/Pop
@@ -791,7 +798,8 @@ export async function searchCanonicalSong(
       // Also try a small set of title variants (e.g., "you've" -> "u")
       const variants = titleVariants(title);
       const variantRecordings = await Promise.all(
-        variants.map((t) => searchByTitle(t)),
+        // Keep this modest; we supplement recall via artist-scoped discovery below.
+        variants.map((t) => searchByTitle(t, 75)),
       );
       const dedupRaw = new Map<string, MusicBrainzRecording>();
       for (const list of variantRecordings) {

@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useRouter } from "next/router";
+import { X } from "lucide-react";
 
 import type { SearchResultItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -16,6 +17,7 @@ export function SearchPage() {
   const [results, setResults] = React.useState<SearchResultItem[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const inputRef = React.useRef<HTMLInputElement>(null);
 
   async function handleSearch(e?: React.FormEvent) {
     if (e) e.preventDefault();
@@ -97,12 +99,36 @@ export function SearchPage() {
             onSubmit={handleSearch}
             className="flex flex-col gap-2 sm:flex-row"
           >
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search for a song…"
-              className="h-11"
-            />
+            <div className="relative w-full">
+              <Input
+                ref={inputRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search for a song…"
+                className={cn("h-11 pr-10", "w-full")}
+              />
+              {query.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuery("");
+                    setResults([]);
+                    setError(null);
+                    inputRef.current?.focus();
+                  }}
+                  className={cn(
+                    "absolute right-2 top-1/2 -translate-y-1/2",
+                    "grid h-8 w-8 place-items-center rounded-md",
+                    "text-muted-foreground hover:text-foreground",
+                    "hover:bg-secondary/50",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  )}
+                  aria-label="Clear search"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
             <Button
               type="submit"
               disabled={loading || query.trim().length === 0}
