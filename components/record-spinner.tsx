@@ -3,12 +3,12 @@ import { cn } from "@/lib/utils";
 export function RecordSpinner({
   size = 28,
   className,
-  label = "LINR",
+  label,
   showTonearm = false,
 }: {
   size?: number;
   className?: string;
-  label?: string;
+  label?: string | null;
   showTonearm?: boolean;
 }) {
   const px = `${size}px`;
@@ -46,11 +46,13 @@ export function RecordSpinner({
         <div className="pointer-events-none absolute -right-1 top-1 h-1 w-[55%] origin-left rotate-12 rounded-full bg-primary shadow-sm" />
       ) : null}
 
-      <div className="absolute inset-0 grid place-items-center">
-        <div className="rounded-full bg-accent px-1 text-[9px] font-semibold tracking-wide text-accent-foreground">
-          {label}
+      {label ? (
+        <div className="absolute inset-0 grid place-items-center">
+          <div className="rounded-full bg-accent px-1 text-[9px] font-semibold tracking-wide text-accent-foreground">
+            {label}
+          </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }
