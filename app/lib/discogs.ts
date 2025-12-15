@@ -38,6 +38,86 @@ function discogsHeaders() {
   };
 }
 
+function normalizeRoleLoose(role: string): string {
+  return (role ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/[\[\]\(\)]/g, " ")
+    .replace(/[-–—_/\\,;:]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function roleCategoryScore(role: string): {
+  musician: number;
+  production: number;
+  writing: number;
+} {
+  const r = normalizeRoleLoose(role);
+  if (!r) return { musician: 0, production: 0, writing: 0 };
+
+  // Musician / performance-ish roles (what users expect in Performers)
+  const musicianKeywords = [
+    "vocals",
+    "vocal",
+    "singer",
+    "guitar",
+    "bass",
+    "drums",
+    "percussion",
+    "keyboards",
+    "keyboard",
+    "piano",
+    "synth",
+    "synthesizer",
+    "organ",
+    "horn",
+    "sax",
+    "saxophone",
+    "trumpet",
+    "trombone",
+    "violin",
+    "strings",
+    "cello",
+    "backing",
+    "choir",
+    "congas",
+    "timbales",
+    "marimba",
+    "harmonica",
+  ];
+  if (musicianKeywords.some((k) => r.includes(k))) {
+    return { musician: 1, production: 0, writing: 0 };
+  }
+
+  // Writing roles
+  if (
+    r.includes("written") ||
+    r.includes("write") ||
+    r.includes("songwriter") ||
+    r.includes("composer") ||
+    r.includes("composition") ||
+    r.includes("lyrics") ||
+    r.includes("lyric")
+  ) {
+    return { musician: 0, production: 0, writing: 1 };
+  }
+
+  // Production roles
+  if (
+    r.includes("producer") ||
+    r.includes("engineer") ||
+    r.includes("recorded") ||
+    r.includes("recording") ||
+    r.includes("mix") ||
+    r.includes("master")
+  ) {
+    return { musician: 0, production: 1, writing: 0 };
+  }
+
+  return { musician: 0, production: 0, writing: 0 };
+}
+
 function normalizeLoose(s: string): string {
   return (s ?? "")
     .replace(/’/g, "'")
@@ -76,7 +156,7 @@ export async function fetchDiscogsCredits(params: {
       u.searchParams.set("type", "release");
       u.searchParams.set("artist", qArtist);
       u.searchParams.set("release_title", qReleaseTitle);
-      u.searchParams.set("per_page", "8");
+      u.searchParams.set("per_page", "12");
       u.searchParams.set("token", DISCOGS_TOKEN);
       searchAttempts.push({ url: u });
     }
@@ -87,7 +167,9 @@ export async function fetchDiscogsCredits(params: {
       u.searchParams.set("type", "release");
       u.searchParams.set("artist", qArtist);
       u.searchParams.set("track", title.trim());
-      u.searchParams.set("per_page", "8");
+      // Track searches can return lots of remixes/covers; pull a bit more and we’ll
+      // filter down + pick the best by musician-role density.
+      u.searchParams.set("per_page", "20");
       u.searchParams.set("token", DISCOGS_TOKEN);
       searchAttempts.push({ url: u });
     }
@@ -101,9 +183,12 @@ export async function fetchDiscogsCredits(params: {
       const sJson = (await sRes.json()) as DiscogsSearchResponse;
       const results = Array.isArray(sJson.results) ? sJson.results : [];
       for (const r of results) {
-        if (r?.type === "release" && typeof r.id === "number") {
-          candidateIds.push(r.id);
-        }
+        if (r?.type !== "release" || typeof r.id !== "number") continue;
+        // Discogs search results often have `title` like "Artist - Release".
+        // Filter out obvious mismatches where the artist isn't even present.
+        const t = (r.title ?? "").toLowerCase();
+        if (t && !t.includes(qArtist.toLowerCase())) continue;
+        candidateIds.push(r.id);
       }
       if (candidateIds.length >= 12) break;
     }
@@ -114,6 +199,7 @@ export async function fetchDiscogsCredits(params: {
     let best: {
       id: number;
       credits: Array<{ name: string; role: string }>;
+      score: number;
     } | null = null;
 
     for (const relId of uniqIds) {
@@ -126,6 +212,9 @@ export async function fetchDiscogsCredits(params: {
       const extra = Array.isArray(rJson.extraartists) ? rJson.extraartists : [];
 
       const credits: Array<{ name: string; role: string }> = [];
+      let musicianCount = 0;
+      let productionCount = 0;
+      let writingCount = 0;
       for (const ea of extra) {
         const name = (ea?.name ?? "").trim();
         const role = (ea?.role ?? "").trim();
@@ -136,11 +225,24 @@ export async function fetchDiscogsCredits(params: {
           .split(/;|\/|,/)
           .map((r) => r.trim())
           .filter(Boolean);
-        for (const r of roles) credits.push({ name, role: r });
+        for (const r of roles) {
+          credits.push({ name, role: r });
+          const c = roleCategoryScore(r);
+          musicianCount += c.musician;
+          productionCount += c.production;
+          writingCount += c.writing;
+        }
       }
 
-      if (!best || credits.length > best.credits.length) {
-        best = { id: relId, credits };
+      // Prefer releases that actually contain musician/instrument roles.
+      // Writing/production-only releases are common and don't help Performers.
+      const score =
+        musicianCount * 10 +
+        productionCount * 2 +
+        writingCount +
+        Math.min(10, credits.length / 5);
+      if (!best || score > best.score) {
+        best = { id: relId, credits, score };
       }
     }
 

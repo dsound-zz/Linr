@@ -97,9 +97,21 @@ export default function CreditsView({
 
             {/* Background enhancement (data shown, still fetching richer credits) */}
             {enhancing ? (
-              <div className="flex items-center justify-center gap-2 pt-2 text-xs text-muted-foreground">
-                <RecordSpinner size={18} className="opacity-90" />
-                <span>Fetching more credits…</span>
+              <div
+                className={cn(
+                  surface.cardPadded,
+                  "mt-3 flex items-center justify-center gap-3 border-primary/40 bg-secondary/40",
+                )}
+              >
+                <RecordSpinner size={28} className="opacity-95" showTonearm />
+                <div className="space-y-0.5">
+                  <div className="text-sm font-semibold text-foreground">
+                    Fetching more credits…
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Album personnel and additional contributors
+                  </div>
+                </div>
               </div>
             ) : null}
           </div>

@@ -62,7 +62,15 @@ function canonicalPersonName(name: string | null | undefined): string {
 }
 
 function normalizeRole(role: string | null | undefined): string {
-  return (role ?? "").toLowerCase().trim();
+  // Normalize roles from MusicBrainz/Wikipedia/Discogs into a comparable form.
+  // Discogs commonly uses hyphenated roles like "Written-By".
+  return (role ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/[\[\]\(\)]/g, " ")
+    .replace(/[-–—_/\\,;:]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function pushUnique(list: string[], name?: string | null) {
@@ -663,12 +671,44 @@ function mergeWikipediaPersonnel(
       return;
     }
 
+    // Writing credits: Discogs uses "written by", "songwriter", etc.
     if (
       role.includes("write") ||
+      role.includes("written") ||
+      role.includes("songwriter") ||
+      role.includes("composition") ||
       role.includes("composer") ||
-      role.includes("lyrics")
+      role.includes("lyrics") ||
+      role.includes("lyric")
     ) {
+      // Be conservative: Discogs data can be noisy (e.g. listing band members as
+      // "Written-By"). If we already have writers from MusicBrainz/Wikipedia,
+      // only accept incoming writing credits that match existing ones.
+      const hasExistingWritingCredits =
+        base.credits.writers.length > 0 ||
+        base.credits.composers.length > 0 ||
+        base.credits.lyricists.length > 0;
+      if (hasExistingWritingCredits) {
+        const existing = new Set(
+          [
+            ...base.credits.writers,
+            ...base.credits.composers,
+            ...base.credits.lyricists,
+          ].map((n) => canonicalPersonName(n)),
+        );
+        if (!existing.has(canonicalPersonName(name))) {
+          return;
+        }
+      }
+
+      // Keep Writers section complete; the UI merges writers+composers.
       pushUnique(base.credits.writers, name);
+      if (role.includes("composer") || role.includes("composition")) {
+        pushUnique(base.credits.composers, name);
+      }
+      if (role.includes("lyrics") || role.includes("lyric")) {
+        pushUnique(base.credits.lyricists, name);
+      }
       return;
     }
 

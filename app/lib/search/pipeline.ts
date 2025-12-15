@@ -1090,25 +1090,40 @@ export async function searchCanonicalSong(
   // Step 2.5: Expand candidates with prominent artists for ambiguous single-word queries
   // This runs in parallel for performance
   if (isSingleWordQuery && !artist) {
-    const expansionStartTime = performance.now();
-    const expandedRawRecordings = await expandWithProminentArtists(
-      title,
-      rawRecordings,
-    );
-    const expansionTime = performance.now() - expansionStartTime;
-
-    if (expandedRawRecordings.length > rawRecordings.length) {
-      rawRecordings = expandedRawRecordings;
-      recordings = normalizeRecordings(expandedRawRecordings);
+    const obviousSong = getObviousSongForTitle(title);
+    // If we have an obvious-song mapping, don't spend time expanding with prominent
+    // artists. The obvious probe already injects a high-recall, artist-scoped set.
+    if (obviousSong) {
       if (debugInfo) {
         debugInfo.stages.candidateExpansion = {
-          before:
-            rawRecordings.length -
-            (expandedRawRecordings.length - rawRecordings.length),
-          after: expandedRawRecordings.length,
-          added: expandedRawRecordings.length - rawRecordings.length,
-          timing: { ms: expansionTime },
+          skipped: true,
+          reason:
+            "Obvious-song match present; skipping prominent-artist expansion",
+          artist: obviousSong.artist,
+          canonicalTitle: obviousSong.canonicalTitle,
         };
+      }
+    } else {
+      const expansionStartTime = performance.now();
+      const expandedRawRecordings = await expandWithProminentArtists(
+        title,
+        rawRecordings,
+      );
+      const expansionTime = performance.now() - expansionStartTime;
+
+      if (expandedRawRecordings.length > rawRecordings.length) {
+        rawRecordings = expandedRawRecordings;
+        recordings = normalizeRecordings(expandedRawRecordings);
+        if (debugInfo) {
+          debugInfo.stages.candidateExpansion = {
+            before:
+              rawRecordings.length -
+              (expandedRawRecordings.length - rawRecordings.length),
+            after: expandedRawRecordings.length,
+            added: expandedRawRecordings.length - rawRecordings.length,
+            timing: { ms: expansionTime },
+          };
+        }
       }
     }
   }
@@ -1325,13 +1340,34 @@ export async function searchCanonicalSong(
   // (exact-match + prominence) rather than hard-protecting works.
   let canonicalWorks = new Set<string>();
   if (!artistProvided && isSingleWordQuery) {
-    if (debugInfo) {
-      (debugInfo.stages as Record<string, unknown>).mustIncludeIdentification =
-        {
+    // Exception: if the title is in our curated OBVIOUS_SONGS map, protect that
+    // canonical work so it cannot be crowded out by less culturally relevant matches.
+    const obviousSong = getObviousSongForTitle(title);
+    if (obviousSong) {
+      canonicalWorks = new Set([
+        canonicalKey(obviousSong.canonicalTitle, obviousSong.artist),
+      ]);
+      if (debugInfo) {
+        (
+          debugInfo.stages as Record<string, unknown>
+        ).mustIncludeIdentification = {
+          used: "obviousSong",
+          work: {
+            title: obviousSong.canonicalTitle,
+            artist: obviousSong.artist,
+          },
+        };
+      }
+    } else if (debugInfo) {
+      if (debugInfo) {
+        (
+          debugInfo.stages as Record<string, unknown>
+        ).mustIncludeIdentification = {
           skipped: true,
           reason:
             "Skipped for title-only single-word queries to avoid over-protecting many exact matches",
         };
+      }
     }
   } else {
     // Combine scored recordings and album tracks for identification
