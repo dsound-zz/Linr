@@ -242,10 +242,30 @@ export async function searchByTitleAndArtist(
   if (cached) return cached;
 
   const mb = getMBClient();
-  const query = `recording:"${title}" AND artist:"${artist}"`;
-  const result = await mb.search("recording", { query, limit });
+  const qTitle = (title ?? "").replace(/’/g, "'");
+  const qArtist = (artist ?? "").replace(/’/g, "'");
 
-  const recordings = result.recordings ?? [];
+  const toTitleCase = (s: string) =>
+    s.length ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : s;
+
+  const isSingleWord = qTitle.trim().split(/\s+/).length === 1;
+  const titleCase = toTitleCase(qTitle.trim());
+
+  const run = async (t: string) => {
+    const query = `recording:"${t}" AND artist:"${qArtist}"`;
+    const result = await mb.search("recording", { query, limit });
+    return result.recordings ?? [];
+  };
+
+  // MusicBrainz quoted queries can be case-sensitive; if the user typed a
+  // lowercase title, retry with TitleCase when needed.
+  let recordings = await run(qTitle);
+  if (recordings.length === 0 && (isSingleWord || !/[A-Z]/.test(qTitle))) {
+    if (titleCase && titleCase !== qTitle) {
+      recordings = await run(titleCase);
+    }
+  }
+
   void setCached(cacheKey, recordings);
   return recordings;
 }

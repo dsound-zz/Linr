@@ -1551,15 +1551,11 @@ export async function searchCanonicalSong(
   //   - Artist explicitly provided, OR
   //   - Exactly one canonical work exists (culturally unambiguous)
   // If multiple canonical works exist, force ambiguous mode
-  const totalCanonicalWorksCount = canonicalWorks.size;
-  const hasMultipleCanonicalWorks = totalCanonicalWorksCount >= 2;
-
   // Never return canonical for title-only queries (multi-word or single-word)
   // Title-only queries are inherently ambiguous - require explicit artist for canonical
-  let shouldReturnCanonical =
-    artistProvided &&
-    (totalCanonicalWorksCount === 1 || results.length === 1) &&
-    !hasMultipleCanonicalWorks; // Multiple canonical works = ambiguous
+  // If the user provided an explicit artist, we can confidently return a single
+  // best match within that artist scope. Title-only queries remain ambiguous.
+  let shouldReturnCanonical = Boolean(artistProvided) && results.length > 0;
 
   if (shouldReturnCanonical) {
     // Single canonical result
