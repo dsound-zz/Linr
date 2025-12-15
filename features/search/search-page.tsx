@@ -145,20 +145,27 @@ export function SearchPage() {
                   )}
                 >
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="font-semibold">{item.title}</div>
-                      <div className={cn(text.body, "text-muted-foreground")}>
+                      <div
+                        className={cn(
+                          text.body,
+                          "truncate text-muted-foreground",
+                        )}
+                        title={item.artist}
+                      >
                         {item.artist}
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap justify-end gap-2">
+                    <div className="flex shrink-0 flex-nowrap items-start justify-end gap-2">
                       {item.year ? (
                         <span className={surface.badge}>{item.year}</span>
                       ) : null}
                       {item.source ? (
                         <span className={surface.sticker}>
-                          source: {item.source}
+                          <span className="hidden sm:inline">source: </span>
+                          {item.source}
                         </span>
                       ) : null}
                     </div>
