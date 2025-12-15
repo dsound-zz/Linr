@@ -145,7 +145,7 @@ export function SearchPage() {
                   )}
                 >
                   <div className="flex items-start justify-between gap-3">
-                    <div>
+                    <div className="min-w-0">
                       <div className="font-semibold">{item.title}</div>
                       <div className={cn(text.body, "text-muted-foreground")}>
                         {item.artist}

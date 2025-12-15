@@ -7,7 +7,8 @@ export const text = {
 } as const;
 
 export const surface = {
-  page: "min-h-dvh bg-background text-foreground",
+  // Prevent tiny mobile horizontal overflows from pills/long tokens/animations.
+  page: "min-h-dvh overflow-x-hidden bg-background text-foreground",
   card: "rounded-2xl border-2 border-border bg-card text-card-foreground shadow-sm",
   cardPadded:
     "rounded-2xl border-2 border-border bg-card p-4 text-card-foreground shadow-sm",
@@ -16,5 +17,6 @@ export const surface = {
   badge:
     "inline-flex items-center rounded-full border-2 border-accent bg-accent/25 px-2 py-0.5 text-xs font-semibold text-foreground",
   sticker:
-    "inline-flex items-center rounded-full border-2 border-primary/35 bg-secondary/35 px-2 py-0.5 text-xs font-semibold text-primary",
+    // Allow breaking long tokens like "musicbrainz+wikipedia".
+    "inline-flex items-center break-words rounded-full border-2 border-primary/35 bg-secondary/35 px-2 py-0.5 text-xs font-semibold text-primary",
 } as const;
