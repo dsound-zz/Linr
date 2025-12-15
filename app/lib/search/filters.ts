@@ -45,6 +45,17 @@ export function isStudioRecording(recording: NormalizedRecording): boolean {
   const title = recording.title.toLowerCase();
   const releases = recording.releases;
 
+  const isCompilationRelease = (r: {
+    primaryType: string | null;
+    secondaryTypes: string[];
+  }): boolean => {
+    const primary = (r.primaryType ?? "").toLowerCase();
+    if (primary === "compilation") return true;
+    return r.secondaryTypes.some(
+      (t) => (t ?? "").toLowerCase() === "compilation",
+    );
+  };
+
   // Check release secondary types
   //
   // IMPORTANT:
@@ -53,10 +64,22 @@ export function isStudioRecording(recording: NormalizedRecording): boolean {
   // (live/remix/dj-mix/mixtape), not merely because one compilation release exists.
   const badSecondaryTypes = new Set(["live", "remix", "dj-mix", "mixtape"]);
   const hasAnyRelease = releases.length > 0;
+  // Prefer evaluating "studio-ness" using non-compilation releases when present.
+  // Otherwise, a single compilation release can incorrectly make a live recording
+  // look studio-ish.
+  const nonCompilationReleases = releases.filter(
+    (r) => !isCompilationRelease(r),
+  );
+  const considered =
+    nonCompilationReleases.length > 0 ? nonCompilationReleases : releases;
+
   const allReleasesAreBadSecondary =
     hasAnyRelease &&
-    releases.every((r) =>
-      r.secondaryTypes.some((t) => badSecondaryTypes.has(t.toLowerCase())),
+    considered.length > 0 &&
+    considered.every((r) =>
+      r.secondaryTypes.some((t) =>
+        badSecondaryTypes.has((t ?? "").toLowerCase()),
+      ),
     );
 
   if (allReleasesAreBadSecondary) return false;

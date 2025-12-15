@@ -28,7 +28,7 @@ import {
 import { normalizeRecordings } from "./normalize";
 import { discoverAlbumTracks } from "./releaseTrackFallback";
 import { discoverArtistScopedRecordings } from "./artistScopedRecording";
-import { getPopularArtists, checkWikipediaPresence } from "./artistPopularity";
+import { getPopularArtists } from "./artistPopularity";
 import {
   isExactOrPrefixTitleMatch,
   isStudioRecording,
@@ -40,6 +40,7 @@ import { searchWikipediaTrack } from "./wikipedia";
 import { rerankCandidates } from "./openai";
 import { getArtistProminence } from "./artistProminence";
 import { normalizeArtistName } from "./utils/normalizeArtist";
+import { getObviousSongForTitle } from "./obviousSongs";
 import type {
   NormalizedRecording,
   SearchResponse,
@@ -47,6 +48,52 @@ import type {
   AlbumTrackCandidate,
 } from "./types";
 import type { MusicBrainzRecording } from "../types";
+
+// A small, curated set of globally prominent artists used as a “seatbelt” for
+// title-only queries. We only use this for targeted expansion / early-exit gates.
+const PROMINENT_ARTISTS = [
+  // Soul/R&B
+  "Stevie Wonder",
+  "Whitney Houston",
+  "Dolly Parton",
+  // Rock/Pop
+  "Steely Dan",
+  "Van Halen",
+  "The Beatles",
+  "Michael Jackson",
+  "Madonna",
+  "Prince",
+  "David Bowie",
+  "Elton John",
+  "Queen",
+  "Led Zeppelin",
+  "Pink Floyd",
+  "The Rolling Stones",
+  "Bob Dylan",
+  "Bruce Springsteen",
+  "U2",
+  "Radiohead",
+  "Nirvana",
+  "Oasis",
+  "Eagles",
+  "Guns N' Roses",
+  // Pop/Contemporary
+  "Taylor Swift",
+  "Adele",
+  "Beyoncé",
+  "Rihanna",
+  "Justin Timberlake",
+  "Bruno Mars",
+  "Ed Sheeran",
+  "Ariana Grande",
+  // Hip-Hop/R&B
+  "Eminem",
+  "Jay-Z",
+  "Kanye West",
+  "Drake",
+  "Kendrick Lamar",
+  "The Weeknd",
+] as const;
 
 /**
  * Apply canonical bias to recordings for single-word queries
@@ -129,46 +176,10 @@ async function expandWithProminentArtists(
   title: string,
   existingRecordings: MusicBrainzRecording[],
 ): Promise<MusicBrainzRecording[]> {
-  // Small cached list of prominent artists across genres
-  const prominentArtists = [
-    // Rock/Pop
-    "Van Halen",
-    "The Beatles",
-    "Michael Jackson",
-    "Madonna",
-    "Prince",
-    "David Bowie",
-    "Elton John",
-    "Queen",
-    "Led Zeppelin",
-    "Pink Floyd",
-    "The Rolling Stones",
-    "Bob Dylan",
-    "Bruce Springsteen",
-    "U2",
-    "Radiohead",
-    // Pop/Contemporary
-    "Taylor Swift",
-    "Adele",
-    "Beyoncé",
-    "Rihanna",
-    "Justin Timberlake",
-    "Bruno Mars",
-    "Ed Sheeran",
-    "Ariana Grande",
-    // Hip-Hop/R&B
-    "Eminem",
-    "Jay-Z",
-    "Kanye West",
-    "Drake",
-    "Kendrick Lamar",
-    "The Weeknd",
-  ];
-
   // MusicBrainz often returns a lot of exact-title matches for single-word queries,
   // but may omit culturally canonical artists from the first page(s). Only skip
   // expansion if we already have *any* prominent-artist hits in the current set.
-  const prominentSet = new Set(prominentArtists.map((a) => a.toLowerCase()));
+  const prominentSet = new Set(PROMINENT_ARTISTS.map((a) => a.toLowerCase()));
   const extractPrimaryArtist = (rec: MusicBrainzRecording): string | null => {
     const ac = (rec as unknown as Record<string, unknown>)["artist-credit"];
     if (!Array.isArray(ac) || ac.length === 0) return null;
@@ -186,20 +197,53 @@ async function expandWithProminentArtists(
     return null;
   };
 
-  const hasAnyProminentAlready = existingRecordings.some((r) => {
-    const primary = extractPrimaryArtist(r);
-    return primary ? prominentSet.has(primary.toLowerCase()) : false;
+  const hasGoodProminentCandidateAlready = existingRecordings.some((rec) => {
+    const primary = extractPrimaryArtist(rec);
+    if (!primary) return false;
+    if (!prominentSet.has(primary.toLowerCase())) return false;
+
+    const releases = (rec as unknown as Record<string, unknown>).releases;
+    if (!Array.isArray(releases) || releases.length === 0) return false;
+
+    const isBadSecondary = (t: unknown) => {
+      const s = (typeof t === "string" ? t : "").toLowerCase();
+      return (
+        s === "live" || s === "compilation" || s === "dj-mix" || s === "mixtape"
+      );
+    };
+
+    // If any release looks like a normal studio context (Album/Single and not Live/Compilation),
+    // consider this "good enough" and skip the expensive prominent-artist expansion.
+    return releases.some((r) => {
+      if (!r || typeof r !== "object") return false;
+      const ro = r as Record<string, unknown>;
+      const rg = ro["release-group"];
+      const primaryType =
+        rg && typeof rg === "object"
+          ? (((rg as Record<string, unknown>)["primary-type"] as
+              | string
+              | undefined) ?? "")
+          : "";
+      const primaryLower = primaryType.toLowerCase();
+      if (primaryLower !== "album" && primaryLower !== "single") return false;
+
+      const secondaryTypes =
+        rg && typeof rg === "object"
+          ? ((rg as Record<string, unknown>)["secondary-types"] as unknown)
+          : undefined;
+      const secondary = Array.isArray(secondaryTypes) ? secondaryTypes : [];
+      const hasBadSecondary = secondary.some(isBadSecondary);
+      return !hasBadSecondary;
+    });
   });
-  if (hasAnyProminentAlready) return existingRecordings;
+  if (hasGoodProminentCandidateAlready) return existingRecordings;
 
   // Search with each prominent artist in parallel
   const MAX_PROMINENT_ARTISTS = 12;
   const expansionSearches = await Promise.all(
-    prominentArtists
-      .slice(0, MAX_PROMINENT_ARTISTS)
-      .map((artist) =>
-        searchByTitleAndArtistName(title, artist).catch(() => []),
-      ),
+    PROMINENT_ARTISTS.slice(0, MAX_PROMINENT_ARTISTS).map((artist) =>
+      searchByTitleAndArtistName(title, artist).catch(() => []),
+    ),
   );
 
   // Merge results, dedupe by recording MBID
@@ -483,7 +527,6 @@ function titleVariants(title: string): string[] {
     ya: "u",
     love: "luv",
     your: "ur",
-    and: "n",
   };
   // Prefer "you"/"love"/"your"/"and" (helps match spelled-out titles)
   const canonicalizeMap: Record<string, string> = {
@@ -593,7 +636,6 @@ async function identifyMustIncludeCandidates(
 ): Promise<Set<string>> {
   const normalizedTitle = normalizeTitleKey(title);
   const canonicalWorks = new Set<string>();
-  const artistWikipediaCache = new Map<string, Promise<boolean>>();
 
   // Normalize popular artists to primary names for comparison
   const normalizedPopularArtists = popularArtists.map((a) =>
@@ -636,51 +678,6 @@ async function identifyMustIncludeCandidates(
       normalizeTitleKey(candidate.releaseTitle) === normalizedTitle
     ) {
       shouldInclude = true;
-    }
-
-    // Criterion 4: release year ≥ 2000 AND artist has Wikipedia page
-    if (!shouldInclude) {
-      let year: number | null = null;
-      let artistName: string | null = null;
-
-      if ("releases" in candidate) {
-        // Recording: check release years
-        const recording = candidate as NormalizedRecording & { score: number };
-        const years = recording.releases
-          .map((r) => (r.year ? parseInt(r.year) : null))
-          .filter((y): y is number => y !== null && !isNaN(y));
-        if (years.length > 0) {
-          year = Math.min(...years);
-          artistName = recording.artist;
-        }
-      } else if (isAlbumTrack) {
-        // Album track: check year property
-        const albumTrack = candidate as AlbumTrackCandidate & { score: number };
-        if (albumTrack.year) {
-          const parsedYear = parseInt(albumTrack.year);
-          if (!isNaN(parsedYear)) {
-            year = parsedYear;
-            artistName = albumTrack.artist;
-          }
-        }
-      }
-
-      if (year !== null && year >= 2000 && artistName) {
-        // Check Wikipedia presence for primary artist (with caching)
-        const primaryArtistKey = normalizeArtistName(artistName).primary;
-        let hasWikipedia: boolean;
-        if (artistWikipediaCache.has(primaryArtistKey)) {
-          hasWikipedia = await artistWikipediaCache.get(primaryArtistKey)!;
-        } else {
-          const wikiPromise = checkWikipediaPresence(primaryArtistKey);
-          artistWikipediaCache.set(primaryArtistKey, wikiPromise);
-          hasWikipedia = await wikiPromise;
-        }
-
-        if (hasWikipedia) {
-          shouldInclude = true;
-        }
-      }
     }
 
     if (shouldInclude) {
@@ -768,7 +765,20 @@ export async function searchCanonicalSong(
   | { response: SearchResponse | null; debugInfo: DebugInfo }
 > {
   // Step 1: Parse query
-  const { title, artist } = parseUserQuery(query);
+  const parsed = parseUserQuery(query);
+  const artist = parsed.artist;
+
+  // Normalize common title variants to reduce cache misses and avoid expensive
+  // discovery work when users type equivalent punctuation (e.g. "&" vs "and").
+  const normalizeQueryTitle = (t: string): string =>
+    (t ?? "")
+      .replace(/\s*&\s*/g, " and ")
+      .replace(/’/g, "'")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const titleRaw = parsed.title;
+  const title = normalizeQueryTitle(titleRaw);
   const isSingleWordQuery = title.trim().split(/\s+/).length === 1;
   const artistProvided = Boolean(artist);
 
@@ -779,7 +789,12 @@ export async function searchCanonicalSong(
       }
     : null;
 
-  if (debugInfo) debugInfo.stages.parsed = { title, artist };
+  if (debugInfo) {
+    debugInfo.stages.parsed =
+      title !== titleRaw
+        ? { title: titleRaw, titleNormalized: title, artist }
+        : { title, artist };
+  }
 
   let recordings: NormalizedRecording[] = [];
   let rawRecordings: MusicBrainzRecording[] = [];
@@ -801,8 +816,39 @@ export async function searchCanonicalSong(
     if (isSingleWordQuery) {
       const exactRecordings = await searchExactRecordingTitle(title);
       if (exactRecordings.length > 0) {
-        rawRecordings = exactRecordings;
-        recordings = normalizeRecordings(exactRecordings);
+        const dedupRaw = new Map<string, MusicBrainzRecording>();
+        for (const rec of exactRecordings) {
+          if (rec?.id) dedupRaw.set(rec.id, rec);
+        }
+
+        // If this single-word title is an “obvious hit”, inject artist-scoped
+        // results early (cheap + cached) to avoid missing the canonical artist.
+        const obviousSong = getObviousSongForTitle(title);
+        if (obviousSong) {
+          try {
+            const obvious = await searchByTitleAndArtist(
+              obviousSong.canonicalTitle,
+              obviousSong.artist,
+              25,
+            );
+            for (const rec of obvious) {
+              if (rec?.id) dedupRaw.set(rec.id, rec);
+            }
+            if (debugInfo) {
+              (debugInfo.stages as Record<string, unknown>).obviousSongProbe = {
+                title,
+                canonicalTitle: obviousSong.canonicalTitle,
+                artist: obviousSong.artist,
+                added: obvious.length,
+              };
+            }
+          } catch {
+            // best-effort only
+          }
+        }
+
+        rawRecordings = Array.from(dedupRaw.values());
+        recordings = normalizeRecordings(rawRecordings);
         const searchTime = performance.now() - searchStartTime;
         if (debugInfo) {
           debugInfo.stages.recordings = recordings;
@@ -822,11 +868,15 @@ export async function searchCanonicalSong(
       // Multi-word queries - search recordings first, then discover album tracks
       // Album tracks are first-class candidates for modern pop songs
       // Also try a small set of title variants (e.g., "you've" -> "u")
+      // Performance: do a primary search, then a *small* fan-out to variants
+      // (variants use a lower limit to avoid multiplying page fetches).
       const variants = titleVariants(title);
-      const variantRecordings = await Promise.all(
-        // Keep this modest; we supplement recall via artist-scoped discovery below.
-        variants.map((t) => searchByTitle(t, 75)),
+      const primaryRaw = await searchByTitle(title, 75);
+      const otherVariants = variants.filter((v) => v !== title);
+      const otherLists = await Promise.all(
+        otherVariants.map((t) => searchByTitle(t, 25)),
       );
+      const variantRecordings = [primaryRaw, ...otherLists];
       const dedupRaw = new Map<string, MusicBrainzRecording>();
       for (const list of variantRecordings) {
         for (const rec of list) {
@@ -834,7 +884,98 @@ export async function searchCanonicalSong(
         }
       }
       rawRecordings = Array.from(dedupRaw.values());
+      if (debugInfo) {
+        (debugInfo.stages as Record<string, unknown>).titleVariantSearch = {
+          variantsTried: variants,
+          primaryLimit: 75,
+          variantLimit: 25,
+        };
+      }
+
+      // Ultra-fast “obvious hit” probe: if we recognize the title as a cultural
+      // default, inject an artist-scoped search result set early. This is cheap
+      // (small limit, cached) and improves recall without excluding anyone else.
+      const obviousSong = getObviousSongForTitle(title);
+      if (obviousSong) {
+        try {
+          const obvious = await searchByTitleAndArtist(
+            obviousSong.canonicalTitle,
+            obviousSong.artist,
+            25,
+          );
+          for (const rec of obvious) {
+            if (rec?.id) dedupRaw.set(rec.id, rec);
+          }
+          rawRecordings = Array.from(dedupRaw.values());
+          if (debugInfo) {
+            (debugInfo.stages as Record<string, unknown>).obviousSongProbe = {
+              title,
+              canonicalTitle: obviousSong.canonicalTitle,
+              artist: obviousSong.artist,
+              added: obvious.length,
+            };
+          }
+        } catch {
+          // best-effort only
+        }
+      }
+
       recordings = normalizeRecordings(rawRecordings);
+
+      // Performance gate: if the initial MusicBrainz title search already contains a
+      // strong, exact-title, prominent-artist candidate, skip the expensive discovery
+      // steps (album-track discovery + artist popularity scoring + artist-scoped searches).
+      //
+      // This preserves quality for common queries (e.g. "Smells Like Teen Spirit")
+      // while avoiding multi-second cold-cache behavior.
+      const prominentSet = new Set(
+        PROMINENT_ARTISTS.map((a) => a.toLowerCase()),
+      );
+
+      // For this gate, we require an EXACT title match (or exact base-title match
+      // stripping "feat/ft/..."). Prefix matches like "I Wish U Heaven" should not
+      // short-circuit discovery for the query "I wish".
+      const norm = (val: string) =>
+        val
+          .toLowerCase()
+          .replace(/[^a-z0-9\s]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+      const qNorm = norm(title);
+      const isExactTitleMatch = (candidateTitle: string): boolean => {
+        const t = norm(candidateTitle);
+        if (t === qNorm) return true;
+        const base = t.split(/\s+(feat|ft|featuring|with)\s+/i)[0].trim();
+        return base === qNorm;
+      };
+
+      const exactTitleMatches = recordings.filter((r) =>
+        isExactTitleMatch(r.title),
+      );
+      const hasProminentExactMatch = exactTitleMatches.some((r) => {
+        const primary = normalizeArtistName(r.artist).primary.toLowerCase();
+        return prominentSet.has(primary);
+      });
+
+      // Skip expensive discovery if we already have a high-confidence exact match.
+      // This is especially important for obscure songs where the title search already
+      // finds the correct recording quickly, and release-track scanning just burns time.
+      const hasHighConfidenceExactMatch = exactTitleMatches.some((r) => {
+        const s = scoreRecording(r, { title, artist: null });
+        return s >= 85 && isStudioRecording(r) && isAlbumOrSingleRelease(r);
+      });
+
+      const shouldSkipDiscovery =
+        hasProminentExactMatch || hasHighConfidenceExactMatch;
+
+      // Keep a useful debug payload for why we skipped discovery.
+      const prelimTop = exactTitleMatches
+        .map((r) => {
+          const s = scoreRecording(r, { title, artist: null });
+          const prominence = getArtistProminence(r);
+          return { r, s, prominence: prominence.score };
+        })
+        .sort((a, b) => b.s - a.s)[0];
 
       // Derive candidate artists from recording search results
       // Extract unique artists from top recordings
@@ -871,40 +1012,54 @@ export async function searchCanonicalSong(
         .slice(0, 10)
         .map(([artist]) => artist);
 
-      // Discover album tracks by scanning release tracks
-      const discoveredAlbumTracks = await discoverAlbumTracks({
-        title,
-        candidateArtists,
-        debugInfo,
-      });
+      if (!shouldSkipDiscovery) {
+        // Discover album tracks by scanning release tracks
+        const discoveredAlbumTracks = await discoverAlbumTracks({
+          title,
+          candidateArtists,
+          debugInfo,
+        });
 
-      albumTrackCandidates = discoveredAlbumTracks;
+        albumTrackCandidates = discoveredAlbumTracks;
 
-      // Discover artist-scoped recordings for popular artists
-      // This fills the discovery gap for modern pop hits that don't appear in title-only searches
-      const popularArtists = await getPopularArtists(20, candidateArtists);
-      const artistScopedRecordings = await discoverArtistScopedRecordings({
-        title,
-        popularArtists,
-        debugInfo,
-      });
+        // Discover artist-scoped recordings for popular artists
+        // This fills the discovery gap for modern pop hits that don't appear in title-only searches
+        const popularArtists = await getPopularArtists(20, candidateArtists);
+        const artistScopedRecordings = await discoverArtistScopedRecordings({
+          title,
+          popularArtists,
+          debugInfo,
+        });
 
-      // Merge artist-scoped recordings into recordings (deduplicate by ID)
-      const existingIds = new Set(recordings.map((r) => r.id));
-      for (const rec of artistScopedRecordings) {
-        if (!existingIds.has(rec.id)) {
-          recordings.push(rec);
-          existingIds.add(rec.id);
+        // Merge artist-scoped recordings into recordings (deduplicate by ID)
+        const existingIds = new Set(recordings.map((r) => r.id));
+        for (const rec of artistScopedRecordings) {
+          if (!existingIds.has(rec.id)) {
+            recordings.push(rec);
+            existingIds.add(rec.id);
+          }
         }
-      }
 
-      // Store popular artists for must-include identification later
-      if (debugInfo) {
-        if (!debugInfo.stages) {
-          debugInfo.stages = {};
+        // Store popular artists for must-include identification later
+        if (debugInfo) {
+          if (!debugInfo.stages) {
+            debugInfo.stages = {};
+          }
+          (debugInfo.stages as Record<string, unknown>).popularArtistsList =
+            popularArtists;
         }
-        (debugInfo.stages as Record<string, unknown>).popularArtistsList =
-          popularArtists;
+      } else if (debugInfo) {
+        (debugInfo.stages as Record<string, unknown>).discoverySkipped = {
+          reason: hasProminentExactMatch
+            ? "Strong initial exact-title + prominent-artist candidate found; skipping expensive discovery steps"
+            : "High-confidence exact-title studio album/single match found; skipping expensive discovery steps",
+          topCandidate: {
+            artist: prelimTop?.r.artist,
+            title: prelimTop?.r.title,
+            score: prelimTop?.s,
+            prominence: prelimTop?.prominence,
+          },
+        };
       }
 
       // Note: we intentionally do not merge artist-scoped recordings back into
@@ -914,8 +1069,8 @@ export async function searchCanonicalSong(
       if (debugInfo) {
         debugInfo.stages.recordings = recordings;
         debugInfo.stages.albumTracks = {
-          found: discoveredAlbumTracks.length,
-          discovered: true,
+          found: albumTrackCandidates.length,
+          discovered: albumTrackCandidates.length > 0,
           candidateArtists: candidateArtists.length,
         };
         debugInfo.stages.searchTiming = { ms: searchTime };
@@ -1152,11 +1307,15 @@ export async function searchCanonicalSong(
 
   // Step 5: Assemble results with must-include guarantee
   // Separate inclusion from ranking - must-include candidates are guaranteed
-  const MAX_RESULTS = 5;
+  const MAX_RESULTS = !artistProvided && !isSingleWordQuery ? 10 : 5;
 
   // Get popular artists list for must-include identification
+  // Fallback to a small curated list so title-only queries can still protect
+  // culturally obvious results even when we skip expensive discovery steps.
   const popularArtistsList =
-    (debugInfo?.stages.popularArtistsList as string[]) || [];
+    ((debugInfo?.stages.popularArtistsList as string[]) || []).length > 0
+      ? (debugInfo?.stages.popularArtistsList as string[]) || []
+      : [...PROMINENT_ARTISTS];
 
   // Identify must-include candidates BEFORE slicing.
   //

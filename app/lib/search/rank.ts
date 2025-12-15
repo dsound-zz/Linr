@@ -8,6 +8,27 @@
 import type { NormalizedRecording, AlbumTrackCandidate } from "./types";
 import { isStudioRecording, isUSOrWorldwideRelease } from "./filters";
 import { getArtistProminence } from "./artistProminence";
+import { normalizeArtistName } from "./utils/normalizeArtist";
+
+// A small curated set of globally prominent artists used as a “seatbelt” for
+// title-only queries where MusicBrainz metadata can be sparse and popularity
+// signals may not surface in releases for a given recording result.
+const GLOBAL_PROMINENT_ARTISTS = new Set(
+  [
+    "Stevie Wonder",
+    "Whitney Houston",
+    "Dolly Parton",
+    "Van Halen",
+    "The Beatles",
+    "Michael Jackson",
+    "Madonna",
+    "Prince",
+    "David Bowie",
+    "Elton John",
+    "Queen",
+    "Nirvana",
+  ].map((a) => a.toLowerCase()),
+);
 
 /**
  * Score a recording based on how well it matches the query
@@ -100,6 +121,18 @@ export function scoreRecording(
   // Prominence is a seatbelt - guarantees inclusion, slightly influences ranking
   // But never forces canonical selection alone
   if (!artistProvided) {
+    // If this is an exact-title match and the primary artist is globally prominent,
+    // apply an extra boost. This helps canonical “obvious” recordings surface even
+    // when the search result has sparse/misleading release metadata.
+    if (recTitle && qTitle && recTitle === qTitle) {
+      const primary = normalizeArtistName(
+        recording.artist,
+      ).primary.toLowerCase();
+      if (GLOBAL_PROMINENT_ARTISTS.has(primary)) {
+        score += 30;
+      }
+    }
+
     const prominence = getArtistProminence(recording);
     const PROMINENCE_THRESHOLD = 30; // Minimum score to qualify as "prominent"
 

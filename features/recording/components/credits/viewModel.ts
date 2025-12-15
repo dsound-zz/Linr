@@ -140,30 +140,31 @@ function stringsToItems(names: string[]): Item[] {
 
 function performersToItems(p: { name: string; role: string }[]): Item[] {
   return p.map((x) => {
-    // Examples we want to clean:
-    // - "background (vocalist)" -> "background"
-    // - "instrument (guitar)"   -> "guitar"
-    // - "vocal (background vocals)" -> "background"
-    const raw = x.role ?? "";
+    // Rules:
+    // - If the role looks like "instrument (trumpet)" or "vocalist (vocals)", use ONLY the parenthetical part.
+    // - If there is NO parenthetical part (e.g. "vocals"), leave it unchanged.
+    // - If the role is "background (vocalist)", keep "background" (outer is non-generic).
+    const raw = (x.role ?? "").trim();
+    if (!raw) {
+      return { primary: x.name };
+    }
+
     const parenMatch = raw.match(/^\s*(.*?)\s*\(\s*(.*?)\s*\)\s*$/);
-    const outside = parenMatch?.[1] ?? raw;
-    const inside = parenMatch?.[2] ?? "";
+    const outside = (parenMatch?.[1] ?? raw).trim();
+    const inside = (parenMatch?.[2] ?? "").trim();
 
-    // If the outside part is generic, prefer the inside part.
-    const outsideIsGeneric = /\b(instrument|vocalist|vocals?|voice)\b/i.test(
-      outside,
-    );
+    // Only treat the outer label as "generic" when it is a container word.
+    // In those cases, prefer the parenthetical detail (instrument, vocals, etc).
+    const outsideIsGeneric =
+      /\b(instrument|instruments|vocal|vocals|vocalist|voice|performer)\b/i.test(
+        outside,
+      );
 
-    const base = (parenMatch ? (outsideIsGeneric ? inside : outside) : raw)
-      // Drop generic words wherever they appear.
-      .replace(/\b(instrument|vocalist|vocals?|voice)\b/gi, "")
-      // Remove leftover punctuation (incl. parentheses if any remain).
-      .replace(/[^a-zA-Z0-9\s]/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    // Final small cleanup: if we ended up with "background vocals" -> "background"
-    const cleanedRole = base.replace(/\bbackground\b\s+\b\b/gi, "background");
+    const cleanedRole = parenMatch
+      ? outsideIsGeneric
+        ? inside || outside
+        : outside
+      : raw;
 
     return {
       primary: x.name,

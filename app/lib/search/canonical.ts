@@ -10,6 +10,34 @@
 
 import type { NormalizedRecording, CanonicalResult } from "./types";
 
+function isCompilationRelease(r: {
+  primaryType: string | null;
+  secondaryTypes: string[];
+}): boolean {
+  const primary = (r.primaryType ?? "").toLowerCase();
+  if (primary === "compilation") return true;
+  return r.secondaryTypes.some(
+    (t) => (t ?? "").toLowerCase() === "compilation",
+  );
+}
+
+function pickPreferredReleases(
+  releases: NormalizedRecording["releases"],
+): NormalizedRecording["releases"] {
+  // Prefer non-compilation album/single releases for year display.
+  const withYear = releases.filter((r) => Boolean(r.year));
+  if (withYear.length === 0) return releases;
+
+  const nonCompilation = withYear.filter((r) => !isCompilationRelease(r));
+  const candidates = nonCompilation.length > 0 ? nonCompilation : withYear;
+
+  const albumOrSingle = candidates.filter((r) => {
+    const p = (r.primaryType ?? "").toLowerCase();
+    return p === "album" || p === "single";
+  });
+  return albumOrSingle.length > 0 ? albumOrSingle : candidates;
+}
+
 /**
  * Deduplicate recordings by title + artist
  * Keep the one with the highest score
@@ -38,7 +66,7 @@ function deduplicateByTitleArtist(
 function keepEarliestRelease(
   recording: NormalizedRecording,
 ): NormalizedRecording {
-  const releases = recording.releases;
+  const releases = pickPreferredReleases(recording.releases);
 
   if (releases.length === 0) return recording;
 
@@ -71,14 +99,17 @@ function toCanonicalResult(
   source: CanonicalResult["source"] = "musicbrainz",
 ): CanonicalResult {
   // Get earliest release info
+  const preferred = pickPreferredReleases(recording.releases);
   const earliestRelease =
-    recording.releases
+    preferred
       .filter((r) => r.year)
       .sort((a, b) => {
         const yearA = parseInt(a.year!);
         const yearB = parseInt(b.year!);
         return yearA - yearB;
-      })[0] || recording.releases[0];
+      })[0] ||
+    preferred[0] ||
+    recording.releases[0];
 
   // Determine entity type based on source
   let entityType: CanonicalResult["entityType"] = "recording";

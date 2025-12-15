@@ -1,162 +1,170 @@
 /**
  * artistPopularity.ts
  *
- * Artist popularity index backed by MusicBrainz recording counts and Wikipedia presence.
- * Cached to avoid redundant API calls.
- * Used to identify high-confidence popular artists for artist-scoped recording searches.
+ * Fast, offline “popularity” seed list for artist-scoped searches.
+ *
+ * Why:
+ * - The previous approach scored artists via additional MusicBrainz + Wikipedia calls.
+ * - That added significant latency on cold cache / mobile networks.
+ *
+ * This module now returns a curated list of globally popular artists (across eras)
+ * and optionally intersects it with candidates derived from the current query.
  */
-
-import { getMBClient } from "../musicbrainz";
-import { getCached, setCached, cacheKeyArtist } from "./cache";
-
-interface ArtistPopularityScore {
-  name: string;
-  recordingCount: number;
-  hasWikipedia: boolean;
-  score: number;
-}
 
 // In-memory cache for popular artists list (refreshed periodically)
 let cachedPopularArtists: string[] | null = null;
 let cacheTimestamp: number = 0;
 const POPULAR_ARTISTS_CACHE_TTL_MS = 3600000; // 1 hour
 
+// A curated seed list. This is intentionally “wide”: the goal is to cheaply include
+// obvious canonical artists without paying additional network calls.
+//
+// Notes:
+// - This list is only used for *artist-scoped discovery* (recall), not as an exclusion
+//   list. Obscure artists can still win via normal MusicBrainz results + scoring.
+// - Keep names in their canonical display form used by MusicBrainz.
+const POPULAR_ARTISTS_SEED = [
+  // 1950s–1970s
+  "The Beatles",
+  "Elvis Presley",
+  "The Rolling Stones",
+  "Bob Dylan",
+  "Aretha Franklin",
+  "Stevie Wonder",
+  "Marvin Gaye",
+  "The Supremes",
+  "The Beach Boys",
+  "The Who",
+  "Led Zeppelin",
+  "Pink Floyd",
+  "Queen",
+  "David Bowie",
+  "Elton John",
+  "Fleetwood Mac",
+  "ABBA",
+  "Bee Gees",
+  "Earth, Wind & Fire",
+  "James Brown",
+  "Ray Charles",
+  "Johnny Cash",
+  "Simon & Garfunkel",
+  "Neil Young",
+  "Prince",
+  "Dolly Parton",
+
+  // 1980s–1990s
+  "Michael Jackson",
+  "Madonna",
+  "Whitney Houston",
+  "U2",
+  "Bruce Springsteen",
+  "AC/DC",
+  "Guns N' Roses",
+  "Metallica",
+  "Nirvana",
+  "Pearl Jam",
+  "Radiohead",
+  "R.E.M.",
+  "The Cure",
+  "Depeche Mode",
+  "The Police",
+  "Bon Jovi",
+  "Journey",
+  "Phil Collins",
+  "George Michael",
+  "Céline Dion",
+  "Mariah Carey",
+  "Janet Jackson",
+  "Tina Turner",
+  "Sade",
+  "Red Hot Chili Peppers",
+  "Oasis",
+  "Blur",
+  "No Doubt",
+  "Alanis Morissette",
+  "Green Day",
+  "Weezer",
+  "Foo Fighters",
+  "Rage Against the Machine",
+  "Eminem",
+  "2Pac",
+  "The Notorious B.I.G.",
+  "Jay-Z",
+  "Kanye West",
+  "Dr. Dre",
+  "Snoop Dogg",
+  "Outkast",
+  "Aaliyah",
+  "Beyoncé",
+  "Destiny's Child",
+  "Rihanna",
+
+  // 2000s–2010s
+  "Coldplay",
+  "The Killers",
+  "Linkin Park",
+  "The White Stripes",
+  "Arcade Fire",
+  "Daft Punk",
+  "Kendrick Lamar",
+  "Drake",
+  "The Weeknd",
+  "Taylor Swift",
+  "Adele",
+  "Lady Gaga",
+  "Bruno Mars",
+  "Ed Sheeran",
+  "Justin Bieber",
+  "Katy Perry",
+  "Ariana Grande",
+  "Billie Eilish",
+  "Dua Lipa",
+  "Post Malone",
+  "SZA",
+  "Lizzo",
+  "Miley Cyrus",
+  "Harry Styles",
+  "Olivia Rodrigo",
+  "Doja Cat",
+  "Bad Bunny",
+  "Shakira",
+  "BTS",
+
+  // Jazz/Standards crossover (helps for common title queries)
+  "Frank Sinatra",
+  "Ella Fitzgerald",
+  "Louis Armstrong",
+] as const;
+
 /**
- * Get recording count for an artist from MusicBrainz
+ * Deduplicate while preserving order
  */
-async function getArtistRecordingCount(artistName: string): Promise<number> {
-  const cacheKey = cacheKeyArtist(`recording-count:${artistName}`);
-  const cached = await getCached<number>(cacheKey);
-  if (cached !== null) return cached;
-
-  try {
-    const mb = getMBClient();
-    // Search for recordings by this artist to get count
-    const result = await mb.search("recording", {
-      query: `artist:"${artistName}"`,
-      limit: 1, // We only need the count
-    });
-
-    const count = result.count ?? 0;
-    void setCached(cacheKey, count);
-    return count;
-  } catch (err) {
-    console.error(`Failed to get recording count for ${artistName}:`, err);
-    return 0;
+function uniq(list: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of list) {
+    const s = (item ?? "").trim();
+    if (!s) continue;
+    const key = s.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
   }
-}
-
-/**
- * Check if artist has Wikipedia presence
- */
-export async function checkWikipediaPresence(
-  artistName: string,
-): Promise<boolean> {
-  const cacheKey = cacheKeyArtist(`wikipedia:${artistName}`);
-  const cached = await getCached<boolean>(cacheKey);
-  if (cached !== null) return cached;
-
-  try {
-    // Simple Wikipedia API check - search for artist name
-    const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(
-      artistName,
-    )}&format=json&srlimit=1`;
-    const res = await fetch(searchUrl);
-    if (!res.ok) {
-      void setCached(cacheKey, false);
-      return false;
-    }
-    type WikipediaSearchResponse = {
-      query?: {
-        search?: { title?: string }[];
-      };
-    };
-    const json = (await res.json()) as WikipediaSearchResponse;
-    const first = json?.query?.search?.[0];
-    const hasWikipedia = typeof first?.title === "string";
-    void setCached(cacheKey, hasWikipedia);
-    return hasWikipedia;
-  } catch (err) {
-    console.error(`Failed to check Wikipedia for ${artistName}:`, err);
-    void setCached(cacheKey, false);
-    return false;
-  }
-}
-
-/**
- * Compute popularity score for an artist
- */
-async function computeArtistPopularityScore(
-  artistName: string,
-): Promise<ArtistPopularityScore> {
-  const [recordingCount, hasWikipedia] = await Promise.all([
-    getArtistRecordingCount(artistName),
-    checkWikipediaPresence(artistName),
-  ]);
-
-  // Score based on recording count and Wikipedia presence
-  let score = 0;
-  if (recordingCount >= 100) score += 50;
-  else if (recordingCount >= 50) score += 30;
-  else if (recordingCount >= 20) score += 15;
-  else if (recordingCount >= 10) score += 5;
-
-  if (hasWikipedia) score += 20;
-
-  return {
-    name: artistName,
-    recordingCount,
-    hasWikipedia,
-    score,
-  };
-}
-
-/**
- * Get popular artists from initial recording search results
- * Extracts artists that appear frequently or have high recording counts
- */
-async function derivePopularArtistsFromRecordings(
-  artistNames: string[],
-  limit: number,
-): Promise<string[]> {
-  // Score each artist
-  const scores = await Promise.all(
-    artistNames.map((name) => computeArtistPopularityScore(name)),
-  );
-
-  // Sort by score descending
-  scores.sort((a, b) => b.score - a.score);
-
-  // Return top artists
-  return scores
-    .filter((s) => s.score > 0) // Only artists with some popularity signal
-    .slice(0, limit)
-    .map((s) => s.name);
+  return out;
 }
 
 /**
  * Get popular artists for artist-scoped recording searches
  *
- * This function identifies high-confidence popular artists based on:
- * - MusicBrainz recording counts
- * - Wikipedia presence
- *
- * For title-only queries, derives candidates from common modern pop artists
- * that appear frequently in recording search results.
- *
- * @param limit Maximum number of artists to return
- * @param candidateArtists Optional list of candidate artists from recording search
- * @returns Array of popular artist names
+ * Behavior:
+ * - If candidateArtists are provided: prioritize those that appear in the seed list,
+ *   then fill remaining slots with the seed list (still bounded by `limit`).
+ * - If no candidates: return the seed list (bounded by `limit`).
  */
 export async function getPopularArtists(
   limit: number = 50,
   candidateArtists?: string[],
 ): Promise<string[]> {
-  // If we have candidate artists from recording search, use those
-  if (candidateArtists && candidateArtists.length > 0) {
-    return derivePopularArtistsFromRecordings(candidateArtists, limit);
-  }
-
   // Otherwise, check cache
   const now = Date.now();
   if (
@@ -166,42 +174,17 @@ export async function getPopularArtists(
     return cachedPopularArtists.slice(0, limit);
   }
 
-  // Build a list of known popular modern pop artists
-  // These are artists that frequently appear in modern pop music
-  // We'll score them dynamically based on recording counts
-  const knownPopularArtists = [
-    "Ariana Grande",
-    "Taylor Swift",
-    "Ed Sheeran",
-    "Billie Eilish",
-    "The Weeknd",
-    "Dua Lipa",
-    "Post Malone",
-    "Drake",
-    "Justin Bieber",
-    "Bruno Mars",
-    "Adele",
-    "Rihanna",
-    "Beyoncé",
-    "Katy Perry",
-    "Lady Gaga",
-    "Selena Gomez",
-    "Shawn Mendes",
-    "Camila Cabello",
-    "Harry Styles",
-    "Olivia Rodrigo",
-    "Doja Cat",
-    "Lizzo",
-    "SZA",
-    "Miley Cyrus",
-    "Lana Del Rey",
-  ];
+  const seedLower = new Set(POPULAR_ARTISTS_SEED.map((a) => a.toLowerCase()));
 
-  // Score and rank these artists
-  const popularArtists = await derivePopularArtistsFromRecordings(
-    knownPopularArtists,
-    limit,
-  );
+  const prioritizedCandidates =
+    candidateArtists && candidateArtists.length > 0
+      ? candidateArtists.filter((a) => seedLower.has(a.toLowerCase()))
+      : [];
+
+  const popularArtists = uniq([
+    ...prioritizedCandidates,
+    ...POPULAR_ARTISTS_SEED,
+  ]).slice(0, limit);
 
   // Cache the result
   cachedPopularArtists = popularArtists;

@@ -43,9 +43,20 @@ function extractPersonnelFromHtml(
   html: string,
 ): { name: string; role: string }[] {
   const lower = html.toLowerCase();
-  const headingRegex =
-    /<h[2-4][^>]*>\s*<span[^>]*id="[^"]*personnel[^"]*"[^>]*>.*?<\/span>\s*<\/h[2-4]>/i;
-  const headingMatch = headingRegex.exec(html);
+
+  // MediaWiki HTML has shifted over time (sometimes headings are `<h2 id="Personnel">`,
+  // other times `<h2><span id="Personnel">...`). Handle both, plus "Credits".
+  const headingRegexes: RegExp[] = [
+    /<h[2-4][^>]*id="[^"]*personnel[^"]*"[^>]*>[\s\S]*?<\/h[2-4]>/i,
+    /<h[2-4][^>]*>\s*<span[^>]*id="[^"]*personnel[^"]*"[^>]*>[\s\S]*?<\/span>[\s\S]*?<\/h[2-4]>/i,
+    /<h[2-4][^>]*id="[^"]*credits[^"]*"[^>]*>[\s\S]*?<\/h[2-4]>/i,
+    /<h[2-4][^>]*>\s*<span[^>]*id="[^"]*credits[^"]*"[^>]*>[\s\S]*?<\/span>[\s\S]*?<\/h[2-4]>/i,
+    /<h[2-4][^>]*>\s*Personnel\s*<\/h[2-4]>/i,
+    /<h[2-4][^>]*>\s*Credits\s*<\/h[2-4]>/i,
+  ];
+
+  const headingMatch =
+    headingRegexes.map((r) => r.exec(html)).find((m) => m != null) ?? null;
   if (!headingMatch) return [];
 
   const start = headingMatch.index + headingMatch[0].length;
@@ -92,7 +103,11 @@ async function fetchWikipediaPageTitle(
   const candidates = [
     `${title} ${artist} song`,
     `${title} ${artist}`,
+    `${title} ${artist} album`,
+    `${title} ${artist} single`,
     `${title} song`,
+    `${title} album`,
+    `${title} single`,
     title,
   ];
 

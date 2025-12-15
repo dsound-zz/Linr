@@ -12,10 +12,12 @@ import { surface, text } from "@styles/typeography";
 export default function CreditsView({
   data,
   loading,
+  enhancing,
   error,
 }: {
   data: NormalizedRecording | null;
   loading: boolean;
+  enhancing?: boolean;
   error: string | null;
 }) {
   const vm = buildCreditsViewModel(data?.credits);
@@ -32,7 +34,8 @@ export default function CreditsView({
         </Link>
       </div>
 
-      {loading && (
+      {/* Initial load (no data yet) */}
+      {loading && !data && (
         <div className="flex items-center gap-3 rounded-2xl border-2 border-border bg-card p-4">
           <RecordSpinner size={28} />
           <div className={text.body}>Loading…</div>
@@ -91,6 +94,14 @@ export default function CreditsView({
                 </CreditsSection>
               ))}
             </div>
+
+            {/* Background enhancement (data shown, still fetching richer credits) */}
+            {enhancing ? (
+              <div className="flex items-center justify-center gap-2 pt-2 text-xs text-muted-foreground">
+                <RecordSpinner size={18} className="opacity-90" />
+                <span>Fetching more credits…</span>
+              </div>
+            ) : null}
           </div>
         </div>
       )}

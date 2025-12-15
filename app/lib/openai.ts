@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { NORMALIZE_RECORDING_TEMPLATE } from "./prompts";
 import { formatArtistCredit } from "./musicbrainz";
 import { getWikipediaPersonnel } from "./wikipedia";
+import { fetchDiscogsCredits } from "./discogs";
 import type {
   NormalizedRecording,
   SearchResultItem,
@@ -698,11 +699,38 @@ function mergeWikipediaPersonnel(
   };
 }
 
+function mergeExternalPersonnel(
+  base: NormalizedRecording,
+  personnel: { name: string; role: string }[],
+  source: string,
+): NormalizedRecording {
+  if (!personnel.length) return base;
+
+  const merged = mergeWikipediaPersonnel(base, personnel);
+  const existingExternal = merged.external?.personnel ?? [];
+  const dedup = new Map<string, { name: string; role: string }>();
+  [...existingExternal, ...personnel].forEach((p) => {
+    if (!p?.name) return;
+    const key = `${canonicalPersonName(p.name)}::${normalizeRole(p.role)}`;
+    if (!dedup.has(key)) {
+      dedup.set(key, { name: p.name, role: p.role });
+    }
+  });
+  return {
+    ...merged,
+    external: {
+      source,
+      personnel: Array.from(dedup.values()),
+    },
+  };
+}
+
 export async function normalizeRecording(
   raw: MusicBrainzRecording,
   opts?: {
     release?: MusicBrainzRelease | null;
     releaseGroup?: unknown | null;
+    allowAI?: boolean;
     allowInferred?: boolean;
     allowExternal?: boolean;
   },
@@ -719,11 +747,35 @@ export async function normalizeRecording(
         derived.artist ?? "",
       );
       if (wikiPersonnel.length) {
-        base = mergeWikipediaPersonnel(base, wikiPersonnel);
+        base = mergeExternalPersonnel(base, wikiPersonnel, "wikipedia");
       }
     } catch (err) {
       console.error("normalizeRecording wikipedia enrichment failed", err);
     }
+  }
+
+  // If external enrichment is enabled and credits are still sparse, try Discogs as a best-effort
+  // source for album-level personnel/credits (requires DISCOGS_TOKEN).
+  if (opts?.allowExternal !== false) {
+    const performerCount = base.credits.performers.length;
+    if (performerCount < 3) {
+      try {
+        const discogsPersonnel = await fetchDiscogsCredits({
+          artist: derived.artist ?? "",
+          title: derived.title ?? "",
+          releaseTitle: opts?.release?.title ?? null,
+        });
+        if (discogsPersonnel.length) {
+          base = mergeExternalPersonnel(base, discogsPersonnel, "discogs");
+        }
+      } catch (err) {
+        console.error("normalizeRecording discogs enrichment failed", err);
+      }
+    }
+  }
+
+  if (opts?.allowAI === false) {
+    return base;
   }
 
   if (!OPENAI_API_KEY) {

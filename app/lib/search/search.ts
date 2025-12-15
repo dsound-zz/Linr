@@ -23,7 +23,9 @@ export async function searchByTitle(
   title: string,
   limit = 200,
 ): Promise<MusicBrainzRecording[]> {
-  const cacheKey = cacheKeyRecording(`title:${title}:${limit}`);
+  // Normalize cache key to avoid missing on casing/spacing.
+  const cacheTitle = title.toLowerCase().replace(/\s+/g, " ").trim();
+  const cacheKey = cacheKeyRecording(`title:${cacheTitle}:${limit}`);
   const cached = await getCached<MusicBrainzRecording[]>(cacheKey);
   if (cached) return cached;
 
@@ -34,6 +36,12 @@ export async function searchByTitle(
     // Multi-word queries: use existing fuzzy search behavior
     const recordings: MusicBrainzRecording[] = [];
     const pageSize = 25; // MB search max
+    const qNorm = cacheTitle
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const tokenCount = qNorm.split(/\s+/).filter(Boolean).length;
+    const shouldStopEarlyOnExactMatch = tokenCount >= 4 || /\d/.test(qNorm);
 
     for (
       let offset = 0;
@@ -48,6 +56,23 @@ export async function searchByTitle(
 
       const rawRecordings = result.recordings ?? [];
       recordings.push(...rawRecordings);
+
+      // Performance: for long/specific titles, if the first page already contains
+      // an exact title match, don't paginate further. This avoids many seconds of
+      // extra MB calls on obscure songs.
+      if (offset === 0 && shouldStopEarlyOnExactMatch) {
+        const hasExact = rawRecordings.some((r) => {
+          const t = (r?.title ?? "")
+            .toLowerCase()
+            .replace(/[^a-z0-9\s]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+          if (t === qNorm) return true;
+          const base = t.split(/\s+(feat|ft|featuring|with)\s+/i)[0].trim();
+          return base === qNorm;
+        });
+        if (hasExact) break;
+      }
 
       if (rawRecordings.length < pageSize) break;
     }
@@ -246,7 +271,13 @@ export async function searchByTitleAndArtist(
   const qArtist = (artist ?? "").replace(/’/g, "'");
 
   const toTitleCase = (s: string) =>
-    s.length ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : s;
+    s
+      .trim()
+      .split(/\s+/)
+      .map((w) =>
+        w.length ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w,
+      )
+      .join(" ");
 
   const isSingleWord = qTitle.trim().split(/\s+/).length === 1;
   const titleCase = toTitleCase(qTitle.trim());
@@ -392,8 +423,13 @@ export async function searchByTitleAndArtistName(
   if (cached) return cached;
 
   const mb = getMBClient();
-  const titleCase =
-    title.charAt(0).toUpperCase() + title.slice(1).toLowerCase();
+  const titleCase = title
+    .trim()
+    .split(/\s+/)
+    .map((w) =>
+      w.length ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w,
+    )
+    .join(" ");
   const query = `recording:"${titleCase}" AND artist:"${artist}"`;
 
   try {

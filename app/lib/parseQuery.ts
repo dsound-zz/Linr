@@ -35,6 +35,51 @@ export function parseUserQuery(q: string) {
     (w) => w[0] && w[0] === w[0].toUpperCase(),
   );
 
+  // Guard: some title endings are commonly capitalized but are not artists
+  // (e.g., "Go On", "Hold On", "Come On"). If the candidate artist is composed
+  // only of very common stop/auxiliary words, don't infer it as an artist.
+  const stopWords = new Set([
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "but",
+    "by",
+    "do",
+    "for",
+    "from",
+    "go",
+    "hold",
+    "i",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "me",
+    "my",
+    "no",
+    "not",
+    "of",
+    "on",
+    "or",
+    "out",
+    "so",
+    "the",
+    "to",
+    "up",
+    "we",
+    "will",
+    "with",
+    "you",
+    "your",
+  ]);
+  const candidateWordsLower = words.map((w) => w.toLowerCase());
+  const looksLikeTitleTail = candidateWordsLower.every((w) => stopWords.has(w));
+
   // Punctuation can indicate a proper name (e.g., "AC/DC", "Guns N' Roses"),
   // but apostrophes inside lowercase contractions (e.g., "can't") should NOT
   // trigger artist inference.
@@ -43,7 +88,8 @@ export function parseUserQuery(q: string) {
     /[&/\.]/.test(candidateArtist) ||
     (hasUppercase && /'/.test(candidateArtist));
 
-  const looksProperName = looksCapitalizedName || hasNamePunctuation;
+  const looksProperName =
+    (looksCapitalizedName && !looksLikeTitleTail) || hasNamePunctuation;
 
   if (looksProperName) {
     return { title: candidateTitle, artist: candidateArtist };

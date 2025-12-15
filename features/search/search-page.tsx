@@ -149,6 +149,15 @@ export function SearchPage() {
               )}
             </Button>
           </form>
+
+          {loading ? (
+            <div className="pt-2">
+              <div className="flex flex-col items-center justify-center gap-3">
+                <RecordSpinner size={72} showTonearm className="opacity-95" />
+                <div className={text.meta}>Searching…</div>
+              </div>
+            </div>
+          ) : null}
         </section>
 
         {error && <div className="text-sm text-destructive">{error}</div>}
