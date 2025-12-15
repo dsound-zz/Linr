@@ -1,367 +1,209 @@
-# Canonical Song Search API Development Journey
+# LINR – Developer Story (Search + Recording Details + Credits)
 
-**Date:** December 13, 2025  
-**Project:** LINR - Music Entity Resolution Search Pipeline
+**Date:** December 2025
+**Project:** LINR – music entity resolution + “liner notes”
 
 ## Executive Summary
 
-This document chronicles the development of a canonical song search API built on MusicBrainz, Wikipedia, and OpenAI. The journey involved multiple architectural pivots, debugging sessions, and iterative refinements to achieve reliable, culturally-aware song identification.
+LINR started with a deceptively hard user expectation: *type a song query, get the culturally recognized song back.* MusicBrainz gives structured IDs and rich relationships, but real-world music data is messy: ambiguous titles (“Jump”), uneven metadata completeness, multiple competing MBIDs for the “same” song, and performance constraints from rate limits and lookup depth.
 
-**Final Architecture:** A multi-stage pipeline with explicit entity types (`recording`, `album_track`, `song_inferred`), score-gap-based canonical selection, and comprehensive fallback mechanisms.
+The project evolved into **three cooperating pipelines**, each with clear boundaries:
+
+- **Search pipeline** (`/api/search`): resolve a user query into either **ambiguous** results or a single **canonical** result.
+- **Recording details pipeline** (`/api/recording`): take a MusicBrainz **recording MBID** and return a normalized object (cover art + locations + credits), optionally enriched.
+- **Credits pipeline** (`app/lib/credits/*`): merge MusicBrainz + Wikipedia credits into a deduped, UI-friendly structure.
+
+The biggest product/architecture insight was treating **ambiguity as a valid outcome**, and treating “canonical” as something we only assert when the query provides identity (usually an explicit artist).
 
 ---
 
 ## The Core Problem
 
 ### Initial State
-- Overgrown, monolithic search backend
-- Unreliable results for single-word queries (e.g., "jump")
-- No distinction between recordings, album tracks, and inferred songs
-- Premature canonicalization leading to wrong results
-- Missing culturally significant songs (e.g., "The Dude" by Quincy Jones)
 
-### Requirements
-1. **Reliability:** Return the most culturally recognized studio version of a song
-2. **Modularity:** Clean, maintainable, testable pipeline
-3. **Type Safety:** Fully typed TypeScript with clear interfaces
-4. **Ambiguity Handling:** Distinguish between canonical (single result) and ambiguous (multiple results) queries
-5. **Entity Awareness:** Explicitly model different entity types (recordings vs album tracks)
+- Overgrown, monolithic backend logic with intertwined responsibilities.
+- Title-only queries often forced a single answer too early.
+- Missing culturally significant songs due to search blind spots.
+- Slow fallbacks (too many MusicBrainz calls per query).
+- Credits inconsistencies (same “song” across different MBIDs/releases yields different performer lists).
 
----
+### Core Requirements
 
-## Major Challenges & Solutions
-
-### 1. Single-Word Query Ambiguity
-
-**Problem:** Queries like "jump" returned novelty songs, children's songs, or phrase matches instead of canonical hits like Van Halen's "Jump".
-
-**Failed Approaches:**
-- ❌ **Hard filtering by word count** - Eliminated all candidates, causing oscillation between "too strict" and "too loose"
-- ❌ **Wikipedia fallback as primary source** - Returned "Unknown artist" and unreliable results
-- ❌ **Forcing canonical mode** - Ignored legitimate ambiguity when multiple artists had hits
-
-**Working Solution:**
-- ✅ **Exact-title search first** - Use MusicBrainz quoted syntax: `recording:"Jump"` for single-word queries
-- ✅ **Score-gap threshold** - Only return canonical when `topScore - secondScore >= 5`
-- ✅ **Scoring dominance** - Exact title matches get +100 boost for single-word queries
-- ✅ **Penalize repeated-word titles** - "Jump Jump Jump" gets -25 penalty
-
-**Key Code:**
-```typescript
-// pipeline.ts
-const CANONICAL_SCORE_GAP = 5;
-const shouldReturnCanonical =
-  artistProvided ||
-  (isSingleWordQuery && results.length === 1) ||
-  (isSingleWordQuery && results.length > 1 && scoreGap >= CANONICAL_SCORE_GAP);
-```
+1. **Reliability**: surface culturally plausible candidates without brittle, hard-coded exceptions.
+2. **Honest ambiguity**: return multiple legitimate results when the query is under-specified.
+3. **Modularity + testability**: small, single-purpose modules with Vitest coverage.
+4. **Type safety**: explicit entity types and normalized internal shapes.
+5. **Performance**: cap lookups, cache heavily, prefer fast paths.
 
 ---
 
-### 2. Album Track Discovery
+## Major Challenges & What Actually Worked
 
-**Problem:** Songs that exist primarily as album tracks (e.g., "The Dude" by Quincy Jones) never appeared in results because they weren't modeled as standalone recordings in MusicBrainz.
+### 1) Single-Word Query Ambiguity
 
-**Failed Approaches:**
-- ❌ **Treating album tracks as recordings** - Lost entity type information, caused confusion
-- ❌ **Wikipedia-only fallback** - Unreliable, missing artist information
-- ❌ **Forcing canonical selection** - Over-canonicalized multi-word title-only queries
+**Problem:** Single-word titles are inherently ambiguous; a “winner” is often a lie.
 
-**Working Solution:**
-- ✅ **Explicit `album_track` entity type** - Preserved through entire pipeline
-- ✅ **Release-track fallback** - Search releases by title, extract matching tracks
-- ✅ **Entity-aware scoring** - Lighter scoring for album tracks (+10 canonical artist, +5 year ≤ 1990)
-- ✅ **Ambiguous-only inclusion** - Album tracks appear in ambiguous results, never auto-canonicalized
+**What didn’t work:**
 
-**Key Code:**
-```typescript
-// types.ts
-export interface AlbumTrackCandidate {
-  title: string;
-  artist: string;
-  year: string | null;
-  releaseTitle: string | null;
-  releaseId: string;
-  confidenceScore?: number;
-  source: "musicbrainz";
-}
+- Hard word-count filters (oscillated between too strict and too loose).
+- Using Wikipedia as a primary search source (brittle artist extraction, inconsistent).
+- Forcing canonical selection on title-only queries.
 
-// pipeline.ts
-if (!artistProvided && !isSingleWordQuery) {
-  // Include album tracks in ambiguous results
-  const combinedResults = [
-    ...results.slice(0, 3),
-    ...albumTrackResults.slice(0, 2),
-  ];
-}
-```
+**What worked:**
+
+- **Enforce query intent at MusicBrainz**: for single-word title-only queries, use quoted syntax: `recording:"Jump"`.
+- **Score over filter**: keep candidates broad, then score for exact match + studio + release signals.
+- **Return ambiguity by default** for title-only queries.
 
 ---
 
-### 3. Over-Canonicalization
+### 2) Album Track Discovery + Performance
 
-**Problem:** Multi-word title-only queries (e.g., "The Dude") were forced into canonical mode even when multiple artists had legitimate hits.
+**Problem:** Some culturally-known songs are easier to find as **tracks on releases** than as strong recording search hits. Naively scanning release tracklists explodes API calls.
 
-**Failed Approaches:**
-- ❌ **Confidence threshold alone** - Didn't account for score gaps
-- ❌ **Hard-coded single-word logic** - Ignored multi-word ambiguity
-- ❌ **Wikipedia inference gates** - Too permissive, created false positives
+**What didn’t work:**
 
-**Working Solution:**
-- ✅ **Score gap threshold** - Canonical only when gap ≥ 5 points
-- ✅ **Explicit entity resolution** - Step 6.5 assigns `entityType` based on source
-- ✅ **Strict Wikipedia gate** - Only triggers when `!artistProvided && results.length > 0 && topResult.confidenceScore < 95 && queryLooksLikeSongTitle(title)`
-- ✅ **Ambiguity for multi-word title-only** - Always ambiguous unless artist provided
+- Treating tracks as recordings (lost entity identity).
+- Brute-force scanning lots of releases with `lookup(release)`.
 
-**Key Code:**
-```typescript
-// pipeline.ts
-const scoreGap = results.length > 1
-  ? results[0].confidenceScore - results[1].confidenceScore
-  : Infinity;
+**What worked:**
 
-const shouldReturnCanonical =
-  artistProvided ||
-  (isSingleWordQuery && results.length === 1) ||
-  (isSingleWordQuery && results.length > 1 && scoreGap >= CANONICAL_SCORE_GAP);
-```
+- Introduce an explicit `album_track` entity type.
+- Use a **fast path**: derive candidate artists from initial results, then do **artist-scoped recording search** to find likely matches.
+- Keep the slow path only as a tightly bounded fallback (and for tests).
 
 ---
 
-### 4. Scoring Heuristics
+### 3) Over-Canonicalization (Core Product Pivot)
 
-**Problem:** Obscure recordings outranked culturally canonical songs due to missing popularity signals.
+**Problem:** A pipeline that always returns “the canonical song” for title-only queries is inevitably wrong.
 
-**Failed Approaches:**
-- ❌ **Hardcoded artist lists** - Brittle, incomplete
-- ❌ **Wikipedia page presence** - Too slow, unreliable
-- ❌ **OpenAI reranking** - Expensive, inconsistent
+**What worked:**
 
-**Working Solution:**
-- ✅ **Multi-factor scoring** - Title match (+100 exact), canonical artist (+30), studio recording (+10), US release (+5), album release (+10)
-- ✅ **80s US hits boost** - Single-word exact matches, studio album, 1980-1990, US release get +40
-- ✅ **Title track bonus** - Recording title matching release title gets +20
-- ✅ **Age bias** - Older songs get slight boost (up to +10)
-- ✅ **Light MusicBrainz score** - MB score / 10 added to final score
-
-**Key Code:**
-```typescript
-// rank.ts
-if (isSingleWordQuery && isExactTitleMatch) {
-  if (isStudioAlbum && hasReleaseYearBetween1980And1990 && hasUSRelease) {
-    score += 40; // Canonical 80s US hits boost
-  }
-}
-```
+- Make response mode explicit:
+  - `mode: "ambiguous"` for title-only queries.
+  - `mode: "canonical"` only when the user provides identity (artist disambiguation).
+- Keep score gaps for *ranking + confidence*, not for “forcing” canonical on under-specified queries.
 
 ---
 
-### 5. Query Construction & MusicBrainz API
+### 4) Query Parsing (“why can’t i”)
 
-**Problem:** MusicBrainz token search didn't reliably return single-word titles. Queries were malformed or not preserving case.
+**Problem:** Heuristics mis-inferred an “artist” from lowercase contractions because apostrophes looked like name punctuation.
 
-**Failed Approaches:**
-- ❌ **Broad full-text search** - Returned too many irrelevant results
-- ❌ **Lowercasing quoted queries** - Lost exact match precision
-- ❌ **Premature filtering** - Removed candidates before scoring
+**What worked:**
 
-**Working Solution:**
-- ✅ **Quoted exact-title search** - `recording:"Jump"` for single-word queries
-- ✅ **Preserve case** - Convert to TitleCase: `title.charAt(0).toUpperCase() + title.slice(1).toLowerCase()`
-- ✅ **Pagination handling** - Fetch up to 100 results across multiple pages
-- ✅ **Deduplication** - By recording MBID before normalization
-
-**Key Code:**
-```typescript
-// search.ts
-const titleCase = title.charAt(0).toUpperCase() + title.slice(1).toLowerCase();
-const query = `recording:"${titleCase}"`;
-```
+- Treat apostrophes as “name punctuation” only when there’s uppercase present (e.g. “Guns N’ Roses”, not “can’t i”).
 
 ---
 
-### 6. Testing & Debugging
+### 5) MusicBrainz Metadata Pitfalls (Compilations, Remasters, Variants)
 
-**Problem:** No test coverage, difficult to debug pipeline behavior, large log files.
+**Problem:** Boolean filters can accidentally exclude canonical results (e.g. recordings that appear on compilations *and* albums).
 
-**Failed Approaches:**
-- ❌ **Manual testing only** - Slow, error-prone
-- ❌ **Appending to log files** - Created massive files
-- ❌ **Incomplete mocks** - Tests didn't reflect real behavior
+**What worked:**
 
-**Working Solution:**
-- ✅ **Vitest test suite** - Fast, compatible with Next.js
-- ✅ **Comprehensive mocks** - MusicBrainz API mocked with realistic data
-- ✅ **JSONL logging** - Structured debug output, overwritten each run
-- ✅ **Debug info structure** - Stages, timing, entity resolution, final selection
-
-**Key Code:**
-```typescript
-// vitest.config.ts
-export default defineConfig({
-  test: {
-    globals: true,
-    environment: "node",
-    include: ["**/*.test.ts", "**/*.spec.ts"],
-  },
-});
-
-// pipeline.ts
-if (debug) {
-  debugInfo.stages.finalSelection = {
-    maxResults,
-    recordingsIncluded,
-    albumTracksIncluded,
-    albumTracksTotal,
-    reason,
-  };
-}
-```
+- Prefer **scoring preferences** (boost non-compilation album context) over “exclude if any compilation exists.”
 
 ---
 
-## Final Architecture
+### 6) Credits Completeness Varies by MBID
 
-### Pipeline Flow
+**Problem:** Different MusicBrainz recording IDs for the same “song” can have very different performer relationship completeness.
 
-```
-1. Parse Query → { title, artist }
-2. Search MusicBrainz
-   - If artist: searchByTitleAndArtist
-   - If single-word: searchExactRecordingTitle (quoted)
-   - Else: searchByTitle (broad)
-3. Normalize → NormalizedRecording[]
-4. Apply Filters → Filtered recordings
-5. Score & Sort → Scored recordings
-6. Release Track Fallback (if needed)
-   - Search releases by title
-   - Extract matching tracks → AlbumTrackCandidate[]
-   - Score album tracks separately
-7. Entity Resolution → Assign entityType
-8. Decide Response Mode
-   - Canonical: score gap ≥ 5 OR artist provided OR single result
-   - Ambiguous: score gap < 5 OR multi-word title-only
-9. Wikipedia Validation (optional, late-stage)
-10. Return Response
-```
+**What worked:**
 
-### Module Structure
-
-```
-app/lib/search/
-├── pipeline.ts          # Main orchestrator
-├── search.ts            # MusicBrainz queries
-├── normalize.ts         # MB → NormalizedRecording
-├── filters.ts           # Boolean predicates
-├── rank.ts              # Scoring functions
-├── canonical.ts         # Entity resolution & result assembly
-├── releaseTrackFallback.ts  # Album track discovery
-├── wikipedia.ts         # Wikipedia validation
-├── openai.ts            # Optional reranking
-├── cache.ts             # In-memory caching
-├── types.ts             # Type definitions
-└── __tests__/
-    └── pipeline.test.ts # Unit tests
-```
-
-### Entity Types
-
-```typescript
-type CanonicalEntityType = 
-  | "recording"      // Clean MusicBrainz recording
-  | "album_track"    // Track inferred from album context
-  | "song_inferred"; // Cultural / Wikipedia-level song
-```
-
-### Response Modes
-
-```typescript
-type SearchResponse =
-  | { mode: "canonical"; result: CanonicalResult }
-  | { mode: "ambiguous"; results: CanonicalResult[] };
-```
+- Keep search stable.
+- Enrich credits at detail-time:
+  - `/api/recording` can **merge performers from a few alternate MB recordings** with the same title+artist (bounded + cached) when the base performer list is sparse.
 
 ---
 
-## Key Learnings
+## Final Architecture (How LINR Works Today)
 
-### What Worked ✅
+## A) Search Pipeline (`/api/search` → `searchCanonicalSong`)
 
-1. **Explicit Entity Types** - Modeling `album_track` as first-class entity prevented confusion and enabled proper handling
-2. **Score Gap Threshold** - Simple numeric threshold (5 points) reliably distinguishes canonical from ambiguous
-3. **Scoring Over Filtering** - Let scoring decide rather than hard filters that eliminate candidates
-4. **Quoted Exact Search** - MusicBrainz quoted syntax (`recording:"Jump"`) dramatically improved single-word results
-5. **Modular Architecture** - Small, focused modules (~150 lines each) made debugging and testing manageable
-6. **Comprehensive Debug Logging** - JSONL logs with stage-by-stage breakdown made issues visible immediately
-7. **Vitest Testing** - Fast, compatible test framework enabled regression prevention
+**Goal:** return either:
 
-### What Didn't Work ❌
+- `mode: "ambiguous"` with the top plausible results, or
+- `mode: "canonical"` with a single result when the user disambiguates.
 
-1. **Hard Word-Count Filters** - Created oscillation between "too strict" and "too loose"
-2. **Wikipedia as Primary Source** - Unreliable, missing artist info, too slow
-3. **Forcing Canonical Mode** - Ignored legitimate ambiguity
-4. **Collapsing Entity Types** - Lost important information about source and confidence
-5. **Premature Filtering** - Removed candidates before scoring could evaluate them
-6. **OpenAI Reranking** - Expensive, inconsistent, not worth the cost
-7. **Appending Log Files** - Created massive files, hard to debug
+**High-level flow:**
 
-### Design Principles That Emerged
-
-1. **Explicit Over Implicit** - Entity types, response modes, score gaps all explicit
-2. **Scoring Over Filtering** - Prefer scoring penalties over boolean filters
-3. **Fallback Hierarchy** - Recordings → Album Tracks → Wikipedia (only if needed)
-4. **Ambiguity as Feature** - Sometimes ambiguous is the correct answer
-5. **Cultural Recognition** - Boost canonical artists, 80s hits, title tracks
-6. **Minimal Heuristics** - Few, well-tuned scoring rules beat many ad-hoc filters
-
----
-
-## Performance Optimizations
-
-1. **In-Memory Caching** - TTL-based cache for MusicBrainz responses
-2. **Parallel API Calls** - `Promise.all` for independent requests
-3. **Early Exit** - Return early when high-confidence result found
-4. **Pagination** - Fetch up to 100 results efficiently
-5. **Deduplication** - Remove duplicates before expensive operations
+1. **Parse query** → `{ title, artist | null }`.
+2. **Search MusicBrainz**:
+   - Artist provided → `recording:"title" AND artist:"artist"`.
+   - Title-only single-word → quoted exact-title search first.
+   - Title-only multi-word → search across small title variants (apostrophe normalization + conservative token variants like `u/you`).
+3. **Candidate discovery (multi-word title-only):**
+   - derive candidate artists from results
+   - run album-track discovery (fast path)
+   - run artist-scoped discovery for popular candidate artists
+4. **Normalize** raw recordings.
+5. **Filter conservatively** (exact/prefix title match; studio + album/single unless source implies weaker metadata).
+6. **Score & sort** using heuristic scoring.
+7. **Assemble results** with entity awareness (`recording` vs `album_track`).
+8. **Optional Wikipedia**: late-stage validation/inference under strict gates.
+9. **Optional OpenAI rerank**: only for a small, already-scored candidate set.
+10. **Mode decision**:
+    - Title-only → `ambiguous`.
+    - Artist provided → `canonical` when a single dominant work is appropriate.
 
 ---
 
-## Remaining Challenges
+## B) Recording Details Pipeline (`/api/recording` → `normalizeRecording`)
 
-1. **MusicBrainz Rate Limiting** - No built-in rate limit handling (relies on caching)
-2. **Wikipedia Reliability** - Still occasionally returns "Unknown artist"
-3. **OpenAI Cost** - Reranking is expensive and rarely used
-4. **Test Coverage** - Some edge cases not fully covered
-5. **Internationalization** - Primarily tuned for US/English music
+**Goal:** given a MusicBrainz recording MBID, return a UI-ready `NormalizedRecording` including cover art + locations + credits.
 
----
+**High-level flow:**
 
-## Future Improvements
-
-1. **Rate Limit Handling** - Implement exponential backoff for MusicBrainz
-2. **Wikipedia Fallback Refinement** - Better artist extraction
-3. **Remove OpenAI Dependency** - Not providing value, remove to reduce complexity
-4. **Expand Test Coverage** - More edge cases, integration tests
-5. **International Music** - Tune scoring for non-US releases
-6. **Popularity Signals** - Integrate Spotify/Apple Music popularity if available
+1. `lookupRecording(mbid)`
+2. Choose a **primary release** (prefer Album + not Compilation), lookup release + release-group.
+3. Derive credits/locations from MusicBrainz relations (recording/release/release-group/work).
+4. **Wikipedia personnel enrichment** (optional): `getWikipediaPersonnel(title, artist)`.
+5. **OpenAI normalization** (optional): normalize/clean structured fields.
+6. **OpenAI inferred credits** (optional): if enabled, infer missing credits conservatively.
+7. **Performer enrichment** (best-effort): if performers are sparse, merge additional performers from a few alternate recording MBIDs (bounded + cached).
 
 ---
 
-## Conclusion
+## C) Credits Pipeline (`app/lib/credits/*`)
 
-The journey from an overgrown monolithic backend to a clean, modular, testable pipeline required multiple architectural pivots and iterative refinements. The key breakthrough was introducing explicit entity types and score-gap-based canonical selection, which eliminated the oscillation between "too strict" and "too loose" that plagued earlier versions.
+**Goal:** merge and dedupe credits from MusicBrainz + Wikipedia into stable, role-oriented credits.
 
-The final solution balances reliability, performance, and maintainability while handling the inherent ambiguity of music search queries. By explicitly modeling different entity types and using scoring over filtering, the pipeline can reliably surface culturally canonical songs while gracefully handling ambiguous queries.
+**Flow:**
 
-**Key Metrics:**
-- ✅ "jump" → Van Halen (canonical)
-- ✅ "jump" with close scores → Multiple artists (ambiguous)
-- ✅ "the dude" → Quincy Jones album track (ambiguous)
-- ✅ "the dude quincy jones" → Quincy Jones recording (canonical)
-- ✅ All tests passing (7/7)
-- ✅ No linter errors
-- ✅ Comprehensive debug logging
+1. Fetch MusicBrainz credits.
+2. Normalize roles/names.
+3. Detect missing roles (or treat as sparse).
+4. Fetch Wikipedia credits **only for missing roles**.
+5. Merge + dedupe + sort by role priority.
 
 ---
 
-*This document serves as a reference for future development and a reminder of the lessons learned during this journey.*
+## Observability + Performance
+
+- **Caching**: in-memory caching for MusicBrainz queries (plus targeted caching for enrichment lookups).
+- **Logging**: structured JSONL logs for search and credits responses (capped / recent-only).
+- **Caps + fast paths**: discovery steps are bounded to avoid runaway MusicBrainz API costs.
+
+---
+
+## Current Reality Check (Examples)
+
+- `"jump"` → **ambiguous** (multiple culturally legitimate candidates).
+- `"jump van halen"` → **canonical** (artist disambiguation).
+- `"the dude"` → **ambiguous**, may include `album_track`.
+- `"the dude quincy jones"` → **canonical**.
+
+---
+
+## Appendix: Where Each Data Source Fits
+
+- **MusicBrainz**: authoritative IDs, recordings/releases, relationships → the backbone of search + credits.
+- **Wikipedia**:
+  - Search pipeline: late-stage validation/inference under strict gates.
+  - Recording/credits: personnel extraction to fill missing roles.
+- **OpenAI**:
+  - Search pipeline: optional rerank of a small already-scored candidate set.
+  - Recording details: normalize raw MB payload into a consistent `NormalizedRecording`, and optionally infer missing credits.
