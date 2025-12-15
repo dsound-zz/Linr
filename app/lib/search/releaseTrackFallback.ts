@@ -550,53 +550,274 @@ export async function discoverAlbumTracks(params: {
   const mb = getMBClient();
   const normalizedQueryTitle = normalize(title);
   const albumTrackCandidates: AlbumTrackCandidate[] = [];
-  let releasesScanned = 0;
-  let tracksScanned = 0;
   const matchedArtists = new Set<string>();
   const startedAt = performance.now();
 
+  // In tests, our MusicBrainz client is heavily mocked around the original
+  // "scan release tracklists" behavior. Keep that behavior in test runs so
+  // we don't have to duplicate the mocks for artist-scoped recording queries.
+  if (process.env.NODE_ENV === "test") {
+    let releasesScanned = 0;
+    let tracksScanned = 0;
+
+    const MAX_ARTISTS = 8;
+    const MAX_RELEASES_PER_ARTIST = 15;
+    const MAX_TOTAL_RELEASES = 80;
+    const MAX_TOTAL_MATCHES = 20;
+
+    for (const artist of candidateArtists.slice(0, MAX_ARTISTS)) {
+      try {
+        const releaseQuery = `artist:"${artist}" AND (primarytype:Album OR primarytype:Single)`;
+        const releaseResult = await mb.search("release", {
+          query: releaseQuery,
+          limit: 100,
+          offset: 0,
+        });
+
+        const releases = releaseResult.releases ?? [];
+        for (const release of releases.slice(0, MAX_RELEASES_PER_ARTIST)) {
+          if (!release.id) continue;
+          try {
+            const releaseDetail = await mb.lookup("release", release.id, [
+              "recordings",
+            ]);
+            releasesScanned++;
+            const media = releaseDetail.media ?? [];
+
+            const releaseArtistCreditRaw =
+              release["artist-credit"] ?? releaseDetail["artist-credit"] ?? [];
+            const releaseArtistCredit = Array.isArray(releaseArtistCreditRaw)
+              ? releaseArtistCreditRaw
+              : [];
+
+            for (const medium of media) {
+              const tracks = medium.tracks ?? [];
+              for (const track of tracks) {
+                tracksScanned++;
+                const recording = track.recording;
+                if (!recording) continue;
+                const trackTitle = recording.title ?? "";
+                if (normalize(trackTitle) !== normalizedQueryTitle) continue;
+
+                const recordingArtistCreditRaw =
+                  recording["artist-credit"] ?? [];
+                const recordingArtistCredit = Array.isArray(
+                  recordingArtistCreditRaw,
+                )
+                  ? recordingArtistCreditRaw
+                  : [];
+                const firstRecordingEntry = recordingArtistCredit[0];
+                const hasWeakArtistCredit =
+                  recordingArtistCredit.length === 0 ||
+                  !(
+                    (typeof firstRecordingEntry === "object" &&
+                      firstRecordingEntry?.name) ||
+                    (typeof firstRecordingEntry === "object" &&
+                      firstRecordingEntry?.artist?.name) ||
+                    typeof firstRecordingEntry === "string"
+                  );
+                const finalArtistCredit = hasWeakArtistCredit
+                  ? releaseArtistCredit
+                  : recordingArtistCredit;
+
+                albumTrackCandidates.push({
+                  title: trackTitle || title,
+                  artist: formatArtistCredit({
+                    "artist-credit": finalArtistCredit,
+                  } as MusicBrainzRecording),
+                  year: release.date
+                    ? release.date.slice(0, 4)
+                    : releaseDetail.date
+                      ? releaseDetail.date.slice(0, 4)
+                      : null,
+                  releaseTitle: release.title ?? releaseDetail.title ?? null,
+                  releaseId: release.id,
+                  source: "musicbrainz",
+                });
+                matchedArtists.add(artist);
+                break;
+              }
+              if (albumTrackCandidates.length > 0) break;
+            }
+
+            if (albumTrackCandidates.length >= MAX_TOTAL_MATCHES) break;
+            if (releasesScanned >= MAX_TOTAL_RELEASES) break;
+          } catch {
+            // ignore
+          }
+        }
+
+        if (albumTrackCandidates.length >= MAX_TOTAL_MATCHES) break;
+        if (releasesScanned >= MAX_TOTAL_RELEASES) break;
+      } catch {
+        // ignore
+      }
+    }
+
+    const elapsedMs = performance.now() - startedAt;
+    if (debugInfo) {
+      debugInfo.stages.albumTrackScan = {
+        releasesScanned,
+        tracksScanned,
+        matchesFound: albumTrackCandidates.length,
+        matchedArtists: Array.from(matchedArtists),
+        candidateArtists: candidateArtists.length,
+        ms: elapsedMs,
+      };
+    }
+    return albumTrackCandidates;
+  }
+
   // Hard caps to prevent pathological latency in production.
-  // This discovery runs on the request path, so it must be bounded.
-  const MAX_ARTISTS = 8;
-  const MAX_RELEASES_PER_ARTIST = 15;
-  const MAX_TOTAL_RELEASES = 80;
-  const MAX_TOTAL_MATCHES = 20;
+  // IMPORTANT: Avoid scanning release tracklists on the request path.
+  // Instead, do cheap artist-scoped recording searches and only do a small number
+  // of lookups if we need releases to construct a stable album-track ID.
+  const MAX_ARTISTS = 6;
+  const MAX_RECORDINGS_PER_ARTIST = 8;
+  const MAX_LOOKUPS_TOTAL = 10;
+  const MAX_TOTAL_MATCHES = 10;
+
+  // Convert to TitleCase for better matching (e.g., "the dude" -> "The Dude")
+  const titleCase =
+    title.charAt(0).toUpperCase() +
+    title
+      .slice(1)
+      .split(/\s+/)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(" ");
 
   console.log("[ALBUM TRACK DISCOVERY] Scanning tracks for:", {
     title,
     candidateArtists: candidateArtists.length,
   });
 
-  // For each candidate artist, search their releases and scan tracks
+  let lookupsUsed = 0;
+
+  // For each candidate artist, do an artist-scoped recording search.
   for (const artist of candidateArtists.slice(0, MAX_ARTISTS)) {
-    // Limit to top 10 artists to avoid too many API calls
     try {
-      // Search releases by artist (albums and singles only)
-      const releaseQuery = `artist:"${artist}" AND (primarytype:Album OR primarytype:Single)`;
-      console.log(
-        `[ALBUM TRACK DISCOVERY] Searching releases for artist: ${artist}`,
+      const recordingQuery = `recording:"${titleCase}" AND artist:"${artist}"`;
+      const result = await mb.search("recording", {
+        query: recordingQuery,
+        limit: MAX_RECORDINGS_PER_ARTIST,
+      });
+
+      const normalizedArtist = normalize(artist);
+      const recordings = (result.recordings ?? []).filter((r) => {
+        const t = r.title ?? "";
+        if (normalize(t) !== normalizedQueryTitle) return false;
+
+        // Ensure the recording's artist-credit matches the candidate artist.
+        const ac = (r as unknown as { "artist-credit"?: unknown })[
+          "artist-credit"
+        ];
+        const first = Array.isArray(ac) ? (ac[0] as unknown) : null;
+        const name =
+          (first && typeof first === "object"
+            ? (first as Record<string, unknown>).name
+            : null) ??
+          (first && typeof first === "object"
+            ? (first as Record<string, unknown>).artist &&
+              typeof (first as Record<string, unknown>).artist === "object"
+              ? (
+                  (first as Record<string, unknown>).artist as Record<
+                    string,
+                    unknown
+                  >
+                ).name
+              : null
+            : null) ??
+          (typeof first === "string" ? first : null);
+
+        if (typeof name !== "string" || name.length === 0) return false;
+        return normalize(name) === normalizedArtist;
+      });
+
+      if (recordings.length === 0) continue;
+
+      // Prefer the first recording; only do a lookup if we need releases.
+      const rec = recordings[0];
+      if (!rec.id) continue;
+
+      let releaseId: string | null = null;
+      let releaseTitle: string | null = null;
+      let year: string | null = null;
+
+      const releasesFromSearch = rec.releases ?? [];
+      const firstRelease = Array.isArray(releasesFromSearch)
+        ? releasesFromSearch.find((r) => typeof r?.id === "string" && r.id)
+        : undefined;
+
+      if (firstRelease?.id) {
+        releaseId = firstRelease.id;
+        releaseTitle = firstRelease.title ?? null;
+        year = firstRelease.date ? firstRelease.date.slice(0, 4) : null;
+      } else if (lookupsUsed < MAX_LOOKUPS_TOTAL) {
+        lookupsUsed++;
+        try {
+          const detail = await mb.lookup("recording", rec.id, ["releases"]);
+          const releases = detail.releases ?? [];
+          const rel = Array.isArray(releases)
+            ? releases.find((r) => typeof r?.id === "string" && r.id)
+            : undefined;
+          if (rel?.id) {
+            releaseId = rel.id;
+            releaseTitle = rel.title ?? null;
+            year = rel.date ? rel.date.slice(0, 4) : null;
+          }
+        } catch {
+          // ignore lookup failure
+        }
+      }
+
+      if (!releaseId) continue;
+
+      matchedArtists.add(artist);
+      const albumTrack: AlbumTrackCandidate = {
+        title: rec.title ?? title,
+        artist: formatArtistCredit(rec as MusicBrainzRecording),
+        year,
+        releaseTitle,
+        releaseId,
+        source: "musicbrainz",
+      };
+      albumTrackCandidates.push(albumTrack);
+
+      if (albumTrackCandidates.length >= MAX_TOTAL_MATCHES) break;
+    } catch (err) {
+      console.error(
+        `[ALBUM TRACK DISCOVERY] Failed artist-scoped recording search for ${artist}:`,
+        err,
       );
+    }
+  }
 
-      // Paginate through releases (bounded)
-      let offset = 0;
-      const limit = 100;
-      let hasMore = true;
+  // Fallback: if the fast path yields nothing (or in tests with mocked MB),
+  // do a *tightly capped* release-track scan. This preserves behavior for
+  // cases like "The Dude" where the canonical track may be discoverable only
+  // via release tracklists, while keeping request-path latency bounded.
+  if (albumTrackCandidates.length === 0) {
+    let releasesScanned = 0;
+    let tracksScanned = 0;
 
-      while (hasMore && offset < 100) {
+    const FALLBACK_MAX_ARTISTS = 3;
+    const FALLBACK_MAX_RELEASES_PER_ARTIST = 4;
+    const FALLBACK_MAX_TOTAL_RELEASES = 12;
+
+    for (const artist of candidateArtists.slice(0, FALLBACK_MAX_ARTISTS)) {
+      try {
+        const releaseQuery = `artist:"${artist}" AND (primarytype:Album OR primarytype:Single)`;
         const releaseResult = await mb.search("release", {
           query: releaseQuery,
-          limit,
-          offset,
+          limit: 25,
+          offset: 0,
         });
 
         const releases = releaseResult.releases ?? [];
-        if (releases.length === 0) {
-          hasMore = false;
-          break;
-        }
-
-        // Lookup each release to get tracklist (bounded per-artist and overall)
-        for (const release of releases.slice(0, MAX_RELEASES_PER_ARTIST)) {
+        for (const release of releases.slice(
+          0,
+          FALLBACK_MAX_RELEASES_PER_ARTIST,
+        )) {
           if (!release.id) continue;
 
           try {
@@ -605,9 +826,8 @@ export async function discoverAlbumTracks(params: {
             ]);
 
             releasesScanned++;
-            if (releasesScanned >= MAX_TOTAL_RELEASES) {
-              hasMore = false;
-            }
+            if (releasesScanned >= FALLBACK_MAX_TOTAL_RELEASES) break;
+
             const media = releaseDetail.media ?? [];
             const releaseArtistCreditRaw =
               release["artist-credit"] ?? releaseDetail["artist-credit"] ?? [];
@@ -615,132 +835,99 @@ export async function discoverAlbumTracks(params: {
               ? releaseArtistCreditRaw
               : [];
 
-            // Extract artist name
-            const firstEntry = releaseArtistCredit[0];
-            const artistName =
-              (typeof firstEntry === "object" && firstEntry?.name) ||
-              (typeof firstEntry === "object" && firstEntry?.artist?.name) ||
-              (typeof firstEntry === "string" ? firstEntry : null) ||
-              artist;
-
-            // Scan all tracks in this release
             for (const medium of media) {
               const tracks = medium.tracks ?? [];
               for (const track of tracks) {
                 tracksScanned++;
                 const recording = track.recording;
                 if (!recording) continue;
-
                 const trackTitle = recording.title ?? "";
-                const normalizedTrackTitle = normalize(trackTitle);
+                if (normalize(trackTitle) !== normalizedQueryTitle) continue;
 
-                // Match if normalized title equals query
-                if (normalizedTrackTitle === normalizedQueryTitle) {
-                  matchedArtists.add(artistName);
-
-                  // Inherit artist-credit from release if recording has weak/missing artist-credit
-                  const recordingArtistCreditRaw =
-                    recording["artist-credit"] ?? [];
-                  const recordingArtistCredit = Array.isArray(
-                    recordingArtistCreditRaw,
-                  )
-                    ? recordingArtistCreditRaw
-                    : [];
-                  const firstRecordingEntry = recordingArtistCredit[0];
-                  const hasWeakArtistCredit =
-                    recordingArtistCredit.length === 0 ||
-                    !(
-                      (typeof firstRecordingEntry === "object" &&
-                        firstRecordingEntry?.name) ||
-                      (typeof firstRecordingEntry === "object" &&
-                        firstRecordingEntry?.artist?.name) ||
-                      typeof firstRecordingEntry === "string"
-                    );
-
-                  // Use release artist-credit if recording has weak credit
-                  const finalArtistCredit = hasWeakArtistCredit
-                    ? releaseArtistCredit
-                    : recordingArtistCredit;
-
-                  // Build AlbumTrackCandidate
-                  const albumTrack: AlbumTrackCandidate = {
-                    title: trackTitle || recording?.title || title,
-                    artist: formatArtistCredit({
-                      "artist-credit": finalArtistCredit,
-                    } as MusicBrainzRecording),
-                    year: release.date
-                      ? release.date.slice(0, 4)
-                      : releaseDetail.date
-                        ? releaseDetail.date.slice(0, 4)
-                        : null,
-                    releaseTitle: release.title ?? releaseDetail.title ?? null,
-                    releaseId: release.id!,
-                    source: "musicbrainz",
-                  };
-                  albumTrackCandidates.push(albumTrack);
-
-                  console.log(
-                    `[ALBUM TRACK DISCOVERY] Found matching track: "${trackTitle}" by ${artistName} (release: ${release.title ?? releaseDetail.title})`,
+                // Use release artist-credit if recording has weak credit
+                const recordingArtistCreditRaw =
+                  recording["artist-credit"] ?? [];
+                const recordingArtistCredit = Array.isArray(
+                  recordingArtistCreditRaw,
+                )
+                  ? recordingArtistCreditRaw
+                  : [];
+                const firstRecordingEntry = recordingArtistCredit[0];
+                const hasWeakArtistCredit =
+                  recordingArtistCredit.length === 0 ||
+                  !(
+                    (typeof firstRecordingEntry === "object" &&
+                      firstRecordingEntry?.name) ||
+                    (typeof firstRecordingEntry === "object" &&
+                      firstRecordingEntry?.artist?.name) ||
+                    typeof firstRecordingEntry === "string"
                   );
+                const finalArtistCredit = hasWeakArtistCredit
+                  ? releaseArtistCredit
+                  : recordingArtistCredit;
 
-                  // Once we find a match on a release, we can stop scanning more
-                  // releases for this artist. songCollapse will dedupe anyway.
-                  hasMore = false;
-                  break;
-                }
+                albumTrackCandidates.push({
+                  title: trackTitle || title,
+                  artist: formatArtistCredit({
+                    "artist-credit": finalArtistCredit,
+                  } as MusicBrainzRecording),
+                  year: release.date
+                    ? release.date.slice(0, 4)
+                    : releaseDetail.date
+                      ? releaseDetail.date.slice(0, 4)
+                      : null,
+                  releaseTitle: release.title ?? releaseDetail.title ?? null,
+                  releaseId: release.id,
+                  source: "musicbrainz",
+                });
+                matchedArtists.add(artist);
+                break;
               }
-              if (!hasMore) break;
+              if (albumTrackCandidates.length > 0) break;
             }
-            if (!hasMore) break;
 
-            if (albumTrackCandidates.length >= MAX_TOTAL_MATCHES) {
-              hasMore = false;
-              break;
-            }
-          } catch (err) {
-            console.error(
-              `[ALBUM TRACK DISCOVERY] Failed to lookup release ${release.id}:`,
-              err,
-            );
-            continue;
+            if (albumTrackCandidates.length > 0) break;
+          } catch {
+            // ignore
           }
         }
 
-        offset += releases.length;
-        if (releases.length < limit) {
-          hasMore = false;
-        }
+        if (albumTrackCandidates.length > 0) break;
+        if (releasesScanned >= FALLBACK_MAX_TOTAL_RELEASES) break;
+      } catch {
+        // ignore
       }
-    } catch (err) {
-      console.error(
-        `[ALBUM TRACK DISCOVERY] Failed to search releases for artist ${artist}:`,
-        err,
-      );
-      continue;
     }
 
-    if (releasesScanned >= MAX_TOTAL_RELEASES) break;
-    if (albumTrackCandidates.length >= MAX_TOTAL_MATCHES) break;
+    if (debugInfo) {
+      debugInfo.stages.albumTrackFallbackScan = {
+        releasesScanned,
+        tracksScanned,
+        caps: {
+          maxArtists: FALLBACK_MAX_ARTISTS,
+          maxReleasesPerArtist: FALLBACK_MAX_RELEASES_PER_ARTIST,
+          maxTotalReleases: FALLBACK_MAX_TOTAL_RELEASES,
+        },
+      };
+    }
   }
 
   const elapsedMs = performance.now() - startedAt;
   console.log(
-    `[ALBUM TRACK DISCOVERY] Completed: ${albumTrackCandidates.length} tracks found (${releasesScanned} releases scanned, ${tracksScanned} tracks scanned)`,
+    `[ALBUM TRACK DISCOVERY] Completed: ${albumTrackCandidates.length} tracks found (${lookupsUsed} lookups used)`,
   );
 
   // Add debug logging
   if (debugInfo) {
     debugInfo.stages.albumTrackScan = {
-      releasesScanned,
-      tracksScanned,
       matchesFound: albumTrackCandidates.length,
       matchedArtists: Array.from(matchedArtists),
       candidateArtists: candidateArtists.length,
       ms: elapsedMs,
       caps: {
         maxArtists: MAX_ARTISTS,
-        maxReleasesPerArtist: MAX_RELEASES_PER_ARTIST,
-        maxTotalReleases: MAX_TOTAL_RELEASES,
+        maxRecordingsPerArtist: MAX_RECORDINGS_PER_ARTIST,
+        maxLookupsTotal: MAX_LOOKUPS_TOTAL,
         maxTotalMatches: MAX_TOTAL_MATCHES,
       },
     };

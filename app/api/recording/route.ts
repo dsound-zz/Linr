@@ -43,7 +43,34 @@ export async function GET(req: Request) {
     const raw = await lookupRecording(id);
 
     // Pull the primary release and release-group to harvest additional relations
-    const primaryRelease = raw.releases?.[0];
+    const releases = Array.isArray(raw.releases) ? raw.releases : [];
+
+    // Prefer an Album release that is not a compilation for primary cover art/context.
+    const primaryRelease =
+      releases.find((r) => {
+        const rg = r?.["release-group"];
+        const primaryType =
+          rg && typeof rg === "object"
+            ? ((rg as Record<string, unknown>)["primary-type"] as
+                | string
+                | undefined)
+            : undefined;
+        const secondaryTypes =
+          rg && typeof rg === "object"
+            ? ((rg as Record<string, unknown>)["secondary-types"] as
+                | string[]
+                | undefined)
+            : undefined;
+
+        const isAlbum = (primaryType ?? "").toLowerCase() === "album";
+        const isCompilation = Array.isArray(secondaryTypes)
+          ? secondaryTypes.some(
+              (t) => (t ?? "").toLowerCase() === "compilation",
+            )
+          : false;
+        return isAlbum && !isCompilation;
+      }) ?? releases[0];
+
     const release = primaryRelease?.id
       ? await lookupRelease(primaryRelease.id)
       : null;

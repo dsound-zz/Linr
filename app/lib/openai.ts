@@ -339,9 +339,30 @@ function deriveRecordingFromMB(
   const isrc =
     Array.isArray(raw?.isrcs) && raw.isrcs.length ? raw.isrcs[0] : null;
 
+  const releaseId = primaryRelease?.id ?? null;
+  const releaseGroupId =
+    (primaryRelease?.["release-group"]?.id as string | undefined) ??
+    ((releaseGroup as Record<string, unknown> | null)?.id as
+      | string
+      | undefined) ??
+    null;
+
+  const coverArtUrl = releaseId
+    ? `https://coverartarchive.org/release/${releaseId}/front-500`
+    : releaseGroupId
+      ? `https://coverartarchive.org/release-group/${releaseGroupId}/front-500`
+      : null;
+  const coverArtThumbUrl = releaseId
+    ? `https://coverartarchive.org/release/${releaseId}/front-250`
+    : releaseGroupId
+      ? `https://coverartarchive.org/release-group/${releaseGroupId}/front-250`
+      : null;
+
   return {
     title: raw?.title ?? "",
     artist: formatArtistCredit(raw),
+    coverArtUrl,
+    coverArtThumbUrl,
     release: {
       title: primaryRelease?.title ?? null,
       date:
@@ -452,6 +473,8 @@ function mergeNormalized(
   return {
     title: mergeString(base.title, ai.title) || base.title || "",
     artist: mergeString(base.artist, ai.artist) || base.artist || "",
+    coverArtUrl: base.coverArtUrl ?? null,
+    coverArtThumbUrl: base.coverArtThumbUrl ?? null,
     release: {
       title: mergeString(base.release.title, ai.release?.title) || null,
       date: mergeString(base.release.date, ai.release?.date) || null,

@@ -1,6 +1,8 @@
 export interface NormalizedRecording {
   title: string;
   artist: string;
+  coverArtUrl?: string | null;
+  coverArtThumbUrl?: string | null;
   release: {
     title: string | null;
     date: string | null;

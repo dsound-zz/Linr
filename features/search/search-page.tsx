@@ -2,9 +2,12 @@ import * as React from "react";
 import { useRouter } from "next/router";
 
 import type { SearchResultItem } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import { AppLayout } from "@components/layout/app-layout";
+import { RecordSpinner } from "@components/record-spinner";
 import { Button } from "@components/ui/button";
 import { Input } from "@components/ui/input";
+import { surface, text } from "@styles/typeography";
 
 export function SearchPage() {
   const router = useRouter();
@@ -13,7 +16,6 @@ export function SearchPage() {
   const [results, setResults] = React.useState<SearchResultItem[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [debug, setDebug] = React.useState(false);
 
   async function handleSearch(e?: React.FormEvent) {
     if (e) e.preventDefault();
@@ -24,7 +26,6 @@ export function SearchPage() {
     try {
       const params = new URLSearchParams({
         q: query,
-        ...(debug ? { debug: "1" } : {}),
       });
 
       const res = await fetch(`/api/search?${params.toString()}`);
@@ -70,62 +71,97 @@ export function SearchPage() {
   return (
     <AppLayout>
       <div className="space-y-6">
-        <div className="space-y-2">
-          <h1 className="text-2xl font-semibold tracking-tight">Search</h1>
-          <p className="text-sm text-muted-foreground">
-            Tip: Add an artist with “by” or “-” for tighter matches (e.g. “Jump
-            by Van Halen”).
-          </p>
-        </div>
+        <section className={cn(surface.cardPadded, "space-y-4")}>
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-2">
+              <h1 className={text.pageTitle}>Search</h1>
+              <p className={text.meta}>
+                Tip: Add an artist with “by” or “-” for tighter matches (e.g.
+                “Jump by Van Halen”).
+              </p>
+            </div>
 
-        <div className="space-y-3">
-          <label className="flex items-center gap-2 text-sm text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={debug}
-              onChange={(e) => setDebug(e.target.checked)}
-            />
-            Debug
-          </label>
+            <div
+              className={cn(
+                "relative h-12 w-12 shrink-0 rounded-full border-2 border-border bg-secondary",
+                "grid place-items-center",
+              )}
+              aria-hidden="true"
+            >
+              <div className="h-7 w-7 rounded-full border-2 border-border bg-card" />
+              <div className="absolute h-2 w-2 rounded-full bg-accent" />
+            </div>
+          </div>
 
-          <form onSubmit={handleSearch} className="flex gap-2">
+          <form
+            onSubmit={handleSearch}
+            className="flex flex-col gap-2 sm:flex-row"
+          >
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search for a song…"
+              className="h-11"
             />
             <Button
               type="submit"
               disabled={loading || query.trim().length === 0}
+              className="h-11"
             >
-              {loading ? "Searching…" : "Search"}
+              {loading ? (
+                <span className="inline-flex items-center gap-2">
+                  <RecordSpinner
+                    size={20}
+                    label=""
+                    showTonearm
+                    className="opacity-95"
+                  />
+                  Searching…
+                </span>
+              ) : (
+                "Search"
+              )}
             </Button>
           </form>
-        </div>
+        </section>
 
         {error && <div className="text-sm text-destructive">{error}</div>}
 
         {results.length > 0 && (
           <div className="space-y-3">
-            <h2 className="text-sm font-medium text-muted-foreground">
-              Results
-            </h2>
+            <div className={text.sectionTitle}>Results</div>
 
-            <div className="divide-y divide-border rounded-lg border border-border">
+            <div className="space-y-3">
               {results.map((item) => (
                 <button
                   key={item.id}
                   type="button"
                   onClick={() => void handleSelect(item)}
-                  className="w-full px-4 py-3 text-left transition-colors hover:bg-accent"
+                  className={cn(
+                    surface.cardPadded,
+                    "w-full text-left transition-colors",
+                    "hover:bg-secondary/60",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  )}
                 >
-                  <div className="font-medium">{item.title}</div>
-                  <div className="text-sm text-muted-foreground">
-                    {item.artist}
-                  </div>
-                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                    {item.year ? <span>{item.year}</span> : null}
-                    {item.source ? <span>source: {item.source}</span> : null}
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-semibold">{item.title}</div>
+                      <div className={cn(text.body, "text-muted-foreground")}>
+                        {item.artist}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap justify-end gap-2">
+                      {item.year ? (
+                        <span className={surface.badge}>{item.year}</span>
+                      ) : null}
+                      {item.source ? (
+                        <span className={surface.sticker}>
+                          source: {item.source}
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
                 </button>
               ))}

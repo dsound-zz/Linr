@@ -1,13 +1,22 @@
 import * as React from "react";
 
 import { ThemeToggle } from "@components/theme-toggle";
+import { cn } from "@/lib/utils";
+import { surface } from "@styles/typeography";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-dvh bg-background text-foreground">
-      <header className="border-b border-border">
+    <div className={surface.page}>
+      <header className="border-b-2 border-border bg-card/60 backdrop-blur">
         <div className="mx-auto flex max-w-3xl items-center justify-between px-4 py-3">
-          <div className="font-semibold tracking-tight">Linr</div>
+          <div
+            className={cn(
+              "text-2xl font-semibold tracking-tight",
+              "text-primary",
+            )}
+          >
+            Linr
+          </div>
           <ThemeToggle />
         </div>
       </header>

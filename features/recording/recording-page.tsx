@@ -1,11 +1,9 @@
 import * as React from "react";
-import Link from "next/link";
 import { useRouter } from "next/router";
 
 import type { NormalizedRecording } from "@/lib/types";
 import { AppLayout } from "@components/layout/app-layout";
-import { Button } from "@components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@components/ui/tabs";
+import CreditsView from "./components/CreditsView";
 
 export function RecordingPage() {
   const router = useRouter();
@@ -43,48 +41,7 @@ export function RecordingPage() {
   return (
     <AppLayout>
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <Link href="/">
-            <Button variant="outline">Back</Button>
-          </Link>
-        </div>
-
-        {loading && (
-          <div className="text-sm text-muted-foreground">Loading…</div>
-        )}
-        {error && <div className="text-sm text-destructive">{error}</div>}
-
-        {data && (
-          <div className="space-y-2">
-            <h1 className="text-2xl font-semibold tracking-tight">
-              {data.title}
-            </h1>
-            <div className="text-sm text-muted-foreground">{data.artist}</div>
-            <div className="text-xs text-muted-foreground">
-              {data.release?.title ? `${data.release.title}` : ""}
-              {data.release?.date ? ` — ${data.release.date}` : ""}
-            </div>
-
-            <Tabs defaultValue="raw" className="mt-4">
-              <TabsList>
-                <TabsTrigger value="raw">Raw</TabsTrigger>
-                <TabsTrigger value="credits">Credits</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="raw">
-                <pre className="mt-3 overflow-x-auto rounded-md border border-border bg-muted p-3 text-xs">
-                  {JSON.stringify(data, null, 2)}
-                </pre>
-              </TabsContent>
-
-              <TabsContent value="credits">
-                <pre className="mt-3 overflow-x-auto rounded-md border border-border bg-muted p-3 text-xs">
-                  {JSON.stringify(data.credits, null, 2)}
-                </pre>
-              </TabsContent>
-            </Tabs>
-          </div>
-        )}
+        <CreditsView data={data} loading={loading} error={error} />
       </div>
     </AppLayout>
   );
