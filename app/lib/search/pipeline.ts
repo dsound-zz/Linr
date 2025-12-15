@@ -129,10 +129,6 @@ async function expandWithProminentArtists(
   title: string,
   existingRecordings: MusicBrainzRecording[],
 ): Promise<MusicBrainzRecording[]> {
-  // If we already have a healthy candidate set from MusicBrainz, skip expensive
-  // prominent-artist expansion (this can trigger 30+ additional MB searches).
-  if (existingRecordings.length >= 25) return existingRecordings;
-
   // Small cached list of prominent artists across genres
   const prominentArtists = [
     // Rock/Pop
@@ -169,11 +165,41 @@ async function expandWithProminentArtists(
     "The Weeknd",
   ];
 
+  // MusicBrainz often returns a lot of exact-title matches for single-word queries,
+  // but may omit culturally canonical artists from the first page(s). Only skip
+  // expansion if we already have *any* prominent-artist hits in the current set.
+  const prominentSet = new Set(prominentArtists.map((a) => a.toLowerCase()));
+  const extractPrimaryArtist = (rec: MusicBrainzRecording): string | null => {
+    const ac = (rec as unknown as Record<string, unknown>)["artist-credit"];
+    if (!Array.isArray(ac) || ac.length === 0) return null;
+    const first = ac[0] as unknown;
+    if (typeof first === "object" && first) {
+      const r = first as Record<string, unknown>;
+      const name = r.name;
+      const artist = r.artist;
+      if (typeof name === "string" && name.trim()) return name.trim();
+      if (typeof artist === "object" && artist) {
+        const an = (artist as Record<string, unknown>).name;
+        if (typeof an === "string" && an.trim()) return an.trim();
+      }
+    }
+    return null;
+  };
+
+  const hasAnyProminentAlready = existingRecordings.some((r) => {
+    const primary = extractPrimaryArtist(r);
+    return primary ? prominentSet.has(primary.toLowerCase()) : false;
+  });
+  if (hasAnyProminentAlready) return existingRecordings;
+
   // Search with each prominent artist in parallel
+  const MAX_PROMINENT_ARTISTS = 12;
   const expansionSearches = await Promise.all(
-    prominentArtists.map((artist) =>
-      searchByTitleAndArtistName(title, artist).catch(() => []),
-    ),
+    prominentArtists
+      .slice(0, MAX_PROMINENT_ARTISTS)
+      .map((artist) =>
+        searchByTitleAndArtistName(title, artist).catch(() => []),
+      ),
   );
 
   // Merge results, dedupe by recording MBID
