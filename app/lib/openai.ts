@@ -292,7 +292,7 @@ function collectWorkRelations(
   return workRels;
 }
 
-function deriveRecordingFromMB(
+export function deriveRecordingFromMB(
   raw: MusicBrainzRecording,
   release?: MusicBrainzRelease | null,
   releaseGroup?: unknown | null,

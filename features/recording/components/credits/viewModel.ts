@@ -60,7 +60,14 @@ function buildWriters(raw: unknown): Section | null {
 
   if (!Array.isArray(writers) || !Array.isArray(composers)) return null;
 
-  const items = stringsToItems([...writers, ...composers]);
+  // Combine writers and composers into a Set<string> to ensure uniqueness
+  const writersSet = new Set<string>();
+  for (const writer of [...writers, ...composers]) {
+    if (typeof writer === "string") {
+      writersSet.add(writer);
+    }
+  }
+  const items = stringsToItems(Array.from(writersSet));
 
   return { id: "writers", title: "Writers", items };
 }

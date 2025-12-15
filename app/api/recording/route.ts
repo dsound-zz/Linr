@@ -4,8 +4,10 @@ import {
   lookupRelease,
   lookupReleaseGroup,
 } from "@/lib/musicbrainz";
-import { normalizeRecording } from "@/lib/openai";
+import { deriveRecordingFromMB, normalizeRecording } from "@/lib/openai";
 import { logCreditsResponse } from "@/lib/logger";
+import { cacheKeyRecording, getCached, setCached } from "@/lib/search/cache";
+import { searchByTitleAndArtist } from "@/lib/search/search";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -87,6 +89,70 @@ export async function GET(req: Request) {
       releaseGroup,
       allowInferred,
     });
+
+    // If this recording has sparse performer credits, opportunistically merge
+    // additional performers from alternate MusicBrainz recordings with the same
+    // title+artist. This does NOT affect search ranking/selection; it only enriches
+    // the detail view.
+    const PERFORMER_ENRICH_THRESHOLD = 5;
+    if ((clean.credits.performers?.length ?? 0) < PERFORMER_ENRICH_THRESHOLD) {
+      const key = cacheKeyRecording(`performers-enrich:${id}`);
+      const cached = await getCached<typeof clean.credits.performers>(key);
+
+      const mergePerformers = (
+        base: typeof clean.credits.performers,
+        incoming: typeof clean.credits.performers,
+      ) => {
+        const seen = new Set(base.map((p) => `${p.name}::${p.role}`));
+        const out = [...base];
+        for (const p of incoming) {
+          const k = `${p.name}::${p.role}`;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          out.push(p);
+        }
+        return out;
+      };
+
+      if (cached && Array.isArray(cached)) {
+        clean.credits.performers = mergePerformers(
+          clean.credits.performers,
+          cached,
+        );
+      } else {
+        try {
+          const titleForSearch = (clean.title ?? "").replace(/’/g, "'");
+          const artistForSearch = (clean.artist ?? "").replace(/’/g, "'");
+          const candidates = await searchByTitleAndArtist(
+            titleForSearch,
+            artistForSearch,
+            10,
+          );
+
+          const MAX_ALT_LOOKUPS = 3;
+          let used = 0;
+          let merged = clean.credits.performers;
+
+          for (const c of candidates) {
+            if (!c?.id || c.id === id) continue;
+            used++;
+            if (used > MAX_ALT_LOOKUPS) break;
+
+            const altRaw = await lookupRecording(c.id);
+            const altDerived = deriveRecordingFromMB(altRaw, null, null);
+            if (altDerived.credits.performers?.length) {
+              merged = mergePerformers(merged, altDerived.credits.performers);
+            }
+            if (merged.length >= PERFORMER_ENRICH_THRESHOLD) break;
+          }
+
+          clean.credits.performers = merged;
+          await setCached(key, merged);
+        } catch {
+          // Best-effort only; never fail the request due to enrichment.
+        }
+      }
+    }
 
     // Log last 3 credits payloads returned (summary only)
     await logCreditsResponse({ id, allowInferred, normalized: clean });

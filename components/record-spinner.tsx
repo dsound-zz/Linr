@@ -20,12 +20,22 @@ export function RecordSpinner({
       aria-label="Loading"
       role="status"
     >
+      <style jsx global>{`
+        @keyframes linr-spin {
+          to {
+            transform: rotate(360deg);
+          }
+        }
+      `}</style>
+
       <div
         className={cn(
           "absolute inset-0 rounded-full border-2 border-border bg-card",
-          "animate-spin [animation-duration:1.1s]",
         )}
+        style={{ animation: "linr-spin 1.1s linear infinite" }}
       >
+        {/* A small highlight dot so rotation is visually obvious */}
+        <div className="absolute left-1/2 top-[10%] h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-primary" />
         <div className="absolute inset-[16%] rounded-full border-2 border-border" />
         <div className="absolute inset-[30%] rounded-full border-2 border-border" />
         <div className="absolute inset-[44%] rounded-full bg-accent" />

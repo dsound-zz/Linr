@@ -31,9 +31,19 @@ export function parseUserQuery(q: string) {
   const candidateArtist = parts.slice(-2).join(" ");
   const candidateTitle = parts.slice(0, -2).join(" ");
   const words = candidateArtist.split(" ");
-  const looksProperName =
-    words.every((w) => w[0] && w[0] === w[0].toUpperCase()) ||
-    /[&'.]/.test(candidateArtist);
+  const looksCapitalizedName = words.every(
+    (w) => w[0] && w[0] === w[0].toUpperCase(),
+  );
+
+  // Punctuation can indicate a proper name (e.g., "AC/DC", "Guns N' Roses"),
+  // but apostrophes inside lowercase contractions (e.g., "can't") should NOT
+  // trigger artist inference.
+  const hasUppercase = /[A-Z]/.test(candidateArtist);
+  const hasNamePunctuation =
+    /[&/\.]/.test(candidateArtist) ||
+    (hasUppercase && /'/.test(candidateArtist));
+
+  const looksProperName = looksCapitalizedName || hasNamePunctuation;
 
   if (looksProperName) {
     return { title: candidateTitle, artist: candidateArtist };
