@@ -44,9 +44,24 @@ function buildPerformers(raw: unknown): Section | null {
   if (typeof raw !== "object" || raw === null) return null;
 
   const performers = (raw as { performers?: unknown }).performers;
-  if (!Array.isArray(performers)) return null;
+  const external = (raw as { external?: { personnel?: unknown } }).external;
+  const externalPersonnel = external?.personnel;
 
-  const items = performersToItems(performers);
+  const allPerformers: { name: string; role: string }[] = [];
+
+  // Add regular performers
+  if (Array.isArray(performers)) {
+    allPerformers.push(...performers);
+  }
+
+  // Add external personnel
+  if (Array.isArray(externalPersonnel)) {
+    allPerformers.push(...externalPersonnel);
+  }
+
+  if (allPerformers.length === 0) return null;
+
+  const items = performersToItems(allPerformers);
 
   return { id: "performers", title: "Performers", items };
 }
@@ -145,36 +160,69 @@ function stringsToItems(names: string[]): Item[] {
 }
 
 function performersToItems(p: { name: string; role: string }[]): Item[] {
-  return p.map((x) => {
-    // Rules:
-    // - If the role looks like "instrument (trumpet)" or "vocalist (vocals)", use ONLY the parenthetical part.
-    // - If there is NO parenthetical part (e.g. "vocals"), leave it unchanged.
-    // - If the role is "background (vocalist)", keep "background" (outer is non-generic).
-    const raw = (x.role ?? "").trim();
-    if (!raw) {
-      return { primary: decodeHtmlEntities(x.name) };
-    }
+  return p
+    .filter((x) => {
+      // Filter out descriptive phrases that aren't actual performer names
+      // These are sentences like "Produced by...", "Written by...", etc.
+      const name = x.name.toLowerCase();
+      const descriptivePhrases = [
+        "produced by",
+        "written by",
+        "composed by",
+        "recorded by",
+        "mixed by",
+        "mastered by",
+        "arranged by",
+        "arrangement by",
+        "programming by",
+        "effects by",
+      ];
+      return !descriptivePhrases.some((phrase) => name.includes(phrase));
+    })
+    .map((x) => {
+      let name = x.name;
+      let role = x.role ?? "";
 
-    const parenMatch = raw.match(/^\s*(.*?)\s*\(\s*(.*?)\s*\)\s*$/);
-    const outside = (parenMatch?.[1] ?? raw).trim();
-    const inside = (parenMatch?.[2] ?? "").trim();
+      // Check if the name contains a colon separator (e.g., "Michael Jackson : lead vocals")
+      // This can happen when Wikipedia data isn't properly parsed
+      const colonMatch = name.match(/^([^:]+):(.+)$/);
+      if (colonMatch) {
+        name = colonMatch[1].trim();
+        // If role is empty or generic, use the part after the colon
+        if (!role || role.toLowerCase() === "personnel") {
+          role = colonMatch[2].trim();
+        }
+      }
 
-    // Only treat the outer label as "generic" when it is a container word.
-    // In those cases, prefer the parenthetical detail (instrument, vocals, etc).
-    const outsideIsGeneric =
-      /\b(instrument|instruments|vocal|vocals|vocalist|voice|performer)\b/i.test(
-        outside,
-      );
+      // Rules:
+      // - If the role looks like "instrument (trumpet)" or "vocalist (vocals)", use ONLY the parenthetical part.
+      // - If there is NO parenthetical part (e.g. "vocals"), leave it unchanged.
+      // - If the role is "background (vocalist)", keep "background" (outer is non-generic).
+      const raw = role.trim();
+      if (!raw || raw.toLowerCase() === "personnel") {
+        return { primary: decodeHtmlEntities(name) };
+      }
 
-    const cleanedRole = parenMatch
-      ? outsideIsGeneric
-        ? inside || outside
-        : outside
-      : raw;
+      const parenMatch = raw.match(/^\s*(.*?)\s*\(\s*(.*?)\s*\)\s*$/);
+      const outside = (parenMatch?.[1] ?? raw).trim();
+      const inside = (parenMatch?.[2] ?? "").trim();
 
-    return {
-      primary: decodeHtmlEntities(x.name),
-      secondary: cleanedRole.length > 0 ? decodeHtmlEntities(cleanedRole) : undefined,
-    };
-  });
+      // Only treat the outer label as "generic" when it is a container word.
+      // In those cases, prefer the parenthetical detail (instrument, vocals, etc).
+      const outsideIsGeneric =
+        /\b(instrument|instruments|vocal|vocals|vocalist|voice|performer)\b/i.test(
+          outside,
+        );
+
+      const cleanedRole = parenMatch
+        ? outsideIsGeneric
+          ? inside || outside
+          : outside
+        : raw;
+
+      return {
+        primary: decodeHtmlEntities(name),
+        secondary: cleanedRole.length > 0 ? decodeHtmlEntities(cleanedRole) : undefined,
+      };
+    });
 }

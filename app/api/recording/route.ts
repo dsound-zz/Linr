@@ -268,35 +268,40 @@ export async function GET(req: Request) {
         try {
           const titleForSearch = (clean.title ?? "").replace(/'/g, "'");
           const artistForSearch = (clean.artist ?? "").replace(/'/g, "'");
+
+          // PERFORMANCE: Reduced limit from 10 to 4 since we only use top 3
           const candidates = await searchByTitleAndArtist(
             titleForSearch,
             artistForSearch,
-            10,
+            4,
           );
 
           const MAX_ALT_LOOKUPS = 3;
 
-          // PERFORMANCE: Parallelize alternative recording lookups
           // Filter candidates to ensure c.id is present and not the current recording
           const candidatesToLookup = candidates
             .filter(c => c?.id && c.id !== id)
             .slice(0, MAX_ALT_LOOKUPS) as Array<{ id: string }>;
 
-          const altRecordings = await Promise.all(
-            candidatesToLookup.map(c =>
-              lookupRecording(c.id).catch(() => null)
-            )
-          );
-
+          // PERFORMANCE: Fetch sequentially with early exit instead of parallel
+          // This avoids unnecessary lookups when early candidates provide enough performers
           let merged = clean.credits.performers;
-          for (const altRaw of altRecordings) {
-            if (!altRaw) continue;
+          for (const candidate of candidatesToLookup) {
+            try {
+              const altRaw = await lookupRecording(candidate.id);
+              if (!altRaw) continue;
 
-            const altDerived = deriveRecordingFromMB(altRaw, null, null);
-            if (altDerived.credits.performers?.length) {
-              merged = mergePerformers(merged, altDerived.credits.performers);
+              const altDerived = deriveRecordingFromMB(altRaw, null, null);
+              if (altDerived.credits.performers?.length) {
+                merged = mergePerformers(merged, altDerived.credits.performers);
+              }
+
+              // Early exit if we've reached our threshold
+              if (merged.length >= PERFORMER_ENRICH_THRESHOLD) break;
+            } catch {
+              // Continue to next candidate on error
+              continue;
             }
-            if (merged.length >= PERFORMER_ENRICH_THRESHOLD) break;
           }
 
           clean.credits.performers = merged;

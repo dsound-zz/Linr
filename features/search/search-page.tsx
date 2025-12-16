@@ -18,9 +18,17 @@ export function SearchPage() {
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const abortControllerRef = React.useRef<AbortController | null>(null);
 
   async function handleSearch(e?: React.FormEvent) {
     if (e) e.preventDefault();
+
+    // Abort any in-progress search
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    abortControllerRef.current = new AbortController();
     setError(null);
     setResults([]);
     setLoading(true);
@@ -30,7 +38,9 @@ export function SearchPage() {
         q: query,
       });
 
-      const res = await fetch(`/api/search?${params.toString()}`);
+      const res = await fetch(`/api/search?${params.toString()}`, {
+        signal: abortControllerRef.current.signal,
+      });
       const data = (await res.json()) as {
         results?: SearchResultItem[];
         error?: string;
@@ -40,6 +50,10 @@ export function SearchPage() {
 
       setResults(Array.isArray(data.results) ? data.results : []);
     } catch (err) {
+      // Don't show error if the request was aborted
+      if (err instanceof Error && err.name === "AbortError") {
+        return;
+      }
       setError(err instanceof Error ? err.message : "Search failed");
     } finally {
       setLoading(false);
@@ -111,9 +125,14 @@ export function SearchPage() {
                 <button
                   type="button"
                   onClick={() => {
+                    // Abort any in-progress search
+                    if (abortControllerRef.current) {
+                      abortControllerRef.current.abort();
+                    }
                     setQuery("");
                     setResults([]);
                     setError(null);
+                    setLoading(false);
                     inputRef.current?.focus();
                   }}
                   className={cn(

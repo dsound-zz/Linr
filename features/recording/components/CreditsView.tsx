@@ -90,7 +90,10 @@ export default function CreditsView({
             <div className="space-y-4">
               {vm.sections.map((section) => (
                 <CreditsSection key={section.id} title={section.title}>
-                  <CreditList items={section.items} />
+                  <CreditList
+                    items={section.items}
+                    recordingId={data.identifiers?.mbid}
+                  />
                 </CreditsSection>
               ))}
             </div>

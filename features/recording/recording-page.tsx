@@ -17,8 +17,8 @@ export function RecordingPage() {
   const requestSeq = React.useRef(0);
 
   React.useEffect(() => {
-    if (!router.isReady) return;
-    if (typeof id !== "string") return;
+    if (!router.isReady) return undefined;
+    if (typeof id !== "string") return undefined;
 
     // Guard against race conditions when navigating quickly between recordings.
     // Only the latest request is allowed to update state.

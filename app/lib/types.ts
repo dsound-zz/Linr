@@ -41,6 +41,24 @@ export interface NormalizedRecording {
   };
 }
 
+export interface ContributorProfile {
+  name: string;
+  totalContributions: number;
+  totalRecordings: number;
+  hasMore: boolean;
+  roleBreakdown: {
+    role: string;
+    count: number;
+  }[];
+  contributions: {
+    recordingId: string;
+    title: string;
+    artist: string;
+    releaseDate: string | null;
+    roles: string[];
+  }[];
+}
+
 // MusicBrainz API Types
 export interface MusicBrainzArtist {
   id?: string;
