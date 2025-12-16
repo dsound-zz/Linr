@@ -23,11 +23,26 @@ export function getMBClient(): MusicBrainzApi {
   return cachedClient;
 }
 
+/**
+ * Decode HTML entities in a string
+ */
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&nbsp;/g, " ")
+    .replace(/&#160;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#(\d+);/g, (_match, dec) => String.fromCharCode(dec));
+}
+
 // Helper: turn artist-credit array into a human string
 export function formatArtistCredit(recording: MusicBrainzRecording): string {
   const ac = recording["artist-credit"] ?? recording.artistCredit ?? [];
   if (!Array.isArray(ac)) return "";
-  return ac
+  const formatted = ac
     .map((entry: MusicBrainzArtistCreditEntry | string) => {
       if (typeof entry === "string") return entry; // join phrase
       const name = entry.name || entry.artist?.name;
@@ -35,6 +50,7 @@ export function formatArtistCredit(recording: MusicBrainzRecording): string {
       return `${name ?? ""}${join}`;
     })
     .join("");
+  return decodeHtmlEntities(formatted);
 }
 
 export async function searchGlobalRecordings(

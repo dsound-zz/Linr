@@ -43,46 +43,50 @@ export async function discoverArtistScopedRecordings(params: {
 
   const foundRecordings: NormalizedRecording[] = [];
   const seenIds = new Set<string>();
-  const artistsQueried: string[] = [];
   const artistsMatched = new Set<string>();
 
-  // Search for each popular artist
-  for (const artist of popularArtists.slice(0, 20)) {
-    // Limit to top 20 to avoid too many API calls
-    artistsQueried.push(artist);
+  // PERFORMANCE: Parallelize artist searches instead of sequential
+  // Limit to top 10 artists (reduced from 20) to balance quality and speed
+  const topArtists = popularArtists.slice(0, 10);
+  const artistsQueried = topArtists;
 
-    try {
-      // Search recordings by title + artist
-      // Preserve case in the query
-      const rawRecordings = await searchByTitleAndArtist(title, artist, 10);
-
-      if (rawRecordings.length > 0) {
-        // Normalize the recordings
+  // Run all searches in parallel
+  const searchResults = await Promise.allSettled(
+    topArtists.map(async (artist) => {
+      try {
+        const rawRecordings = await searchByTitleAndArtist(title, artist, 10);
         const normalized = normalizeRecordings(rawRecordings);
+        return { artist, recordings: normalized };
+      } catch (err) {
+        console.error(
+          `Failed to search recordings for "${title}" by "${artist}":`,
+          err,
+        );
+        return { artist, recordings: [] };
+      }
+    }),
+  );
 
-        // Deduplicate by MBID and add to results
-        for (const rec of normalized) {
-          if (!seenIds.has(rec.id)) {
-            seenIds.add(rec.id);
-            // Mark as artist-scoped recording for must-include tracking
-            (
-              rec as NormalizedRecording & { fromArtistScopedSearch?: boolean }
-            ).fromArtistScopedSearch = true;
-            foundRecordings.push(rec);
+  // Process results
+  for (const result of searchResults) {
+    if (result.status === "fulfilled" && result.value.recordings.length > 0) {
+      const { artist, recordings } = result.value;
 
-            // Track which artists matched (using normalized artist comparison)
-            if (artistsMatch(rec.artist, artist)) {
-              artistsMatched.add(artist);
-            }
+      for (const rec of recordings) {
+        if (!seenIds.has(rec.id)) {
+          seenIds.add(rec.id);
+          // Mark as artist-scoped recording for must-include tracking
+          (
+            rec as NormalizedRecording & { fromArtistScopedSearch?: boolean }
+          ).fromArtistScopedSearch = true;
+          foundRecordings.push(rec);
+
+          // Track which artists matched (using normalized artist comparison)
+          if (artistsMatch(rec.artist, artist)) {
+            artistsMatched.add(artist);
           }
         }
       }
-    } catch (err) {
-      console.error(
-        `Failed to search recordings for "${title}" by "${artist}":`,
-        err,
-      );
-      // Continue with next artist
     }
   }
 

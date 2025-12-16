@@ -118,11 +118,26 @@ export function normalizeRole(role: string): CreditRole | null {
 }
 
 /**
+ * Decode HTML entities in a string
+ */
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&nbsp;/g, " ")
+    .replace(/&#160;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#(\d+);/g, (match, dec) => String.fromCharCode(dec));
+}
+
+/**
  * Normalize a person's name
- * Removes extra whitespace, handles common variations
+ * Removes extra whitespace, handles common variations, decodes HTML entities
  */
 export function normalizeName(name: string): string {
-  return name
+  return decodeHtmlEntities(name)
     .trim()
     .replace(/\s+/g, " ")
     .replace(/^Dr\.\s+/i, "")
@@ -143,6 +158,10 @@ export function normalizeCredits(credits: Credit[]): Credit[] {
         ...credit,
         name: normalizeName(credit.name),
         role: normalizedRole,
+        // Also decode HTML entities in instrument field if present
+        instrument: credit.instrument
+          ? decodeHtmlEntities(credit.instrument).trim()
+          : undefined,
       };
     })
     .filter((credit): credit is Credit => credit !== null);

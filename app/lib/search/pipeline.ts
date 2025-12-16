@@ -806,8 +806,14 @@ export async function searchCanonicalSong(
   const searchStartTime = performance.now();
   if (artist) {
     // Artist provided - use scoped search
+    const scopedSearchStart = performance.now();
     rawRecordings = await searchByTitleAndArtist(title, artist);
+    console.log(`[PERF] searchByTitleAndArtist: ${(performance.now() - scopedSearchStart).toFixed(0)}ms`);
+
+    const normalizeStart = performance.now();
     recordings = normalizeRecordings(rawRecordings);
+    console.log(`[PERF] normalizeRecordings: ${(performance.now() - normalizeStart).toFixed(0)}ms`);
+
     const searchTime = performance.now() - searchStartTime;
     if (debugInfo) {
       debugInfo.stages.recordings = recordings;
@@ -872,12 +878,21 @@ export async function searchCanonicalSong(
       // Also try a small set of title variants (e.g., "you've" -> "u")
       // Performance: do a primary search, then a *small* fan-out to variants
       // (variants use a lower limit to avoid multiplying page fetches).
+      const variantsStart = performance.now();
       const variants = titleVariants(title);
-      const primaryRaw = await searchByTitle(title, 75);
+      console.log(`[PERF] titleVariants: ${(performance.now() - variantsStart).toFixed(0)}ms, variants: ${variants.length}`);
+
+      const primarySearchStart = performance.now();
+      // PERFORMANCE: Reduced from 75 to 50 to save ~1 API call (pagination happens every 25 results)
+      const primaryRaw = await searchByTitle(title, 50);
+      console.log(`[PERF] primarySearch(${title}): ${(performance.now() - primarySearchStart).toFixed(0)}ms, results: ${primaryRaw.length}`);
+
       const otherVariants = variants.filter((v) => v !== title);
+      const variantSearchStart = performance.now();
       const otherLists = await Promise.all(
         otherVariants.map((t) => searchByTitle(t, 25)),
       );
+      console.log(`[PERF] variantSearches(${otherVariants.length} variants): ${(performance.now() - variantSearchStart).toFixed(0)}ms`);
       const variantRecordings = [primaryRaw, ...otherLists];
       const dedupRaw = new Map<string, MusicBrainzRecording>();
       for (const list of variantRecordings) {
@@ -1016,22 +1031,29 @@ export async function searchCanonicalSong(
 
       if (!shouldSkipDiscovery) {
         // Discover album tracks by scanning release tracks
+        const albumTrackStart = performance.now();
         const discoveredAlbumTracks = await discoverAlbumTracks({
           title,
           candidateArtists,
           debugInfo,
         });
+        console.log(`[PERF] discoverAlbumTracks: ${(performance.now() - albumTrackStart).toFixed(0)}ms, found: ${discoveredAlbumTracks.length}`);
 
         albumTrackCandidates = discoveredAlbumTracks;
 
         // Discover artist-scoped recordings for popular artists
         // This fills the discovery gap for modern pop hits that don't appear in title-only searches
+        const popularArtistsStart = performance.now();
         const popularArtists = await getPopularArtists(20, candidateArtists);
+        console.log(`[PERF] getPopularArtists: ${(performance.now() - popularArtistsStart).toFixed(0)}ms, found: ${popularArtists.length}`);
+
+        const artistScopedStart = performance.now();
         const artistScopedRecordings = await discoverArtistScopedRecordings({
           title,
           popularArtists,
           debugInfo,
         });
+        console.log(`[PERF] discoverArtistScopedRecordings: ${(performance.now() - artistScopedStart).toFixed(0)}ms, found: ${artistScopedRecordings.length}`);
 
         // Merge artist-scoped recordings into recordings (deduplicate by ID)
         const existingIds = new Set(recordings.map((r) => r.id));

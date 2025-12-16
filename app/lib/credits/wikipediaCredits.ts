@@ -75,13 +75,15 @@ function extractTextCredits(
 ): Credit[] {
   const credits: Credit[] = [];
 
-  // Decode HTML entities
+  // Decode HTML entities (including &#160; non-breaking spaces)
   const text = html
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/g, " ")
+    .replace(/&#160;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (match, dec) => String.fromCharCode(dec))
     .replace(/\s+/g, " ")
     .trim();
 
