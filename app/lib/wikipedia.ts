@@ -35,6 +35,10 @@ function decodeHtml(html: string): string {
     .replace(/&rsquo;/g, "'")
     .replace(/&ldquo;/g, '"')
     .replace(/&rdquo;/g, '"')
+    .replace(/&#(\d+);/g, (match, dec) => String.fromCharCode(parseInt(dec)))
+    .replace(/&#x([0-9a-f]+);/gi, (match, hex) => String.fromCharCode(parseInt(hex, 16)))
+    // Remove Wikipedia citation references like [27], [ 27 ], [48], [ 48 ], etc.
+    .replace(/\[\s*\d+\s*\]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }

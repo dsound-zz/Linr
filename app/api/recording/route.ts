@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import {
-  lookupRecording,
-  lookupRelease,
-  lookupReleaseGroup,
+    lookupRecording,
+    lookupRelease,
+    lookupReleaseGroup,
 } from "@/lib/musicbrainz";
 import { deriveRecordingFromMB, normalizeRecording } from "@/lib/openai";
 import { logCreditsResponse } from "@/lib/logger";
@@ -148,12 +148,75 @@ export async function GET(req: Request) {
       releases.slice().sort((a, b) => scoreRelease(b) - scoreRelease(a))[0] ??
       releases[0];
 
+    // For display purposes, prefer the earliest non-compilation album/single
+    // This ensures users see the original release, not a compilation version
+    const selectDisplayRelease = (rels: typeof releases) => {
+      // Filter to non-compilations first
+      const nonCompilations = rels.filter((r) => {
+        const rg = r?.["release-group"];
+        const primaryType =
+          rg && typeof rg === "object"
+            ? ((rg as Record<string, unknown>)["primary-type"] as
+                | string
+                | undefined)
+            : undefined;
+        const secondaryTypes =
+          rg && typeof rg === "object"
+            ? ((rg as Record<string, unknown>)["secondary-types"] as
+                | string[]
+                | undefined)
+            : undefined;
+
+        const primary = (primaryType ?? "").toLowerCase();
+        const secondary = Array.isArray(secondaryTypes)
+          ? secondaryTypes.map((t) => (t ?? "").toLowerCase())
+          : [];
+
+        const isCompilation =
+          primary === "compilation" || secondary.includes("compilation");
+
+        const title = (r?.title ?? "").toLowerCase();
+        const looksLikeCompilationTitle =
+          /(greatest hits|best of|hits\b|the hits|collection|anthology|essential|karaoke|tribute)/i.test(
+            title,
+          );
+
+        return !isCompilation && !looksLikeCompilationTitle;
+      });
+
+      // Prefer albums and singles over other types
+      const albumsOrSingles = nonCompilations.filter((r) => {
+        const rg = r?.["release-group"];
+        const primaryType =
+          rg && typeof rg === "object"
+            ? ((rg as Record<string, unknown>)["primary-type"] as
+                | string
+                | undefined)
+            : undefined;
+        const primary = (primaryType ?? "").toLowerCase();
+        return primary === "album" || primary === "single";
+      });
+
+      const candidates = albumsOrSingles.length > 0 ? albumsOrSingles : nonCompilations;
+
+      if (candidates.length === 0) return rels[0];
+
+      // Sort by date (earliest first)
+      return candidates.sort((a, b) => {
+        const dateA = a?.date ?? "";
+        const dateB = b?.date ?? "";
+        return dateA.localeCompare(dateB);
+      })[0];
+    };
+
+    const displayRelease = selectDisplayRelease(releases);
+
     // PERFORMANCE: Parallelize release and release-group lookups
     const releaseGroupIdFromRaw =
       primaryRelease?.["release-group"]?.id ?? null;
 
     const [release, releaseGroupFromDirect] = await Promise.all([
-      primaryRelease?.id ? lookupRelease(primaryRelease.id) : Promise.resolve(null),
+      displayRelease?.id ? lookupRelease(displayRelease.id) : Promise.resolve(null),
       releaseGroupIdFromRaw ? lookupReleaseGroup(releaseGroupIdFromRaw) : Promise.resolve(null),
     ]);
 

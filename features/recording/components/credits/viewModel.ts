@@ -131,9 +131,15 @@ function buildMasteringEngineers(raw: unknown): Section | null {
   return { id: "masteringEngineers", title: "Mastering Engineers", items };
 }
 
+function decodeHtmlEntities(text: string): string {
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = text;
+  return textarea.value;
+}
+
 function stringsToItems(names: string[]): Item[] {
   return names
-    .map((name) => name.trim())
+    .map((name) => decodeHtmlEntities(name.trim()))
     .filter(Boolean)
     .map((name) => ({ primary: name }));
 }
@@ -146,7 +152,7 @@ function performersToItems(p: { name: string; role: string }[]): Item[] {
     // - If the role is "background (vocalist)", keep "background" (outer is non-generic).
     const raw = (x.role ?? "").trim();
     if (!raw) {
-      return { primary: x.name };
+      return { primary: decodeHtmlEntities(x.name) };
     }
 
     const parenMatch = raw.match(/^\s*(.*?)\s*\(\s*(.*?)\s*\)\s*$/);
@@ -167,8 +173,8 @@ function performersToItems(p: { name: string; role: string }[]): Item[] {
       : raw;
 
     return {
-      primary: x.name,
-      secondary: cleanedRole.length > 0 ? cleanedRole : undefined,
+      primary: decodeHtmlEntities(x.name),
+      secondary: cleanedRole.length > 0 ? decodeHtmlEntities(cleanedRole) : undefined,
     };
   });
 }
