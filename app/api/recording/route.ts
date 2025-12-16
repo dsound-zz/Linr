@@ -277,9 +277,10 @@ export async function GET(req: Request) {
           const MAX_ALT_LOOKUPS = 3;
 
           // PERFORMANCE: Parallelize alternative recording lookups
+          // Filter candidates to ensure c.id is present and not the current recording
           const candidatesToLookup = candidates
-            .filter((c): c is typeof candidates[number] & { id: string } => Boolean(c?.id && c.id !== id))
-            .slice(0, MAX_ALT_LOOKUPS);
+            .filter(c => c?.id && c.id !== id)
+            .slice(0, MAX_ALT_LOOKUPS) as Array<{ id: string }>;
 
           const altRecordings = await Promise.all(
             candidatesToLookup.map(c =>
