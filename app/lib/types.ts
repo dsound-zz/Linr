@@ -64,6 +64,12 @@ export interface MusicBrainzArtist {
   id?: string;
   name?: string;
   "sort-name"?: string;
+  aliases?: Array<{
+    name?: string;
+    locale?: string;
+    primary?: boolean;
+    type?: string;
+  }>;
 }
 
 export interface MusicBrainzArtistCreditEntry {

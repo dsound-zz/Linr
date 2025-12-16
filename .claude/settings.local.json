@@ -11,7 +11,9 @@
       "Bash(curl:*)",
       "Bash(open http://localhost:3000)",
       "Bash(lsof:*)",
-      "Bash(kill:*)"
+      "Bash(kill:*)",
+      "Bash(git push:*)",
+      "Bash(xargs -I {} curl -s \"http://localhost:3000/api/recording?id={}\")"
     ]
   }
 }

@@ -8,10 +8,10 @@
 import { getMBClient } from "../musicbrainz";
 import type { MusicBrainzRecording, MusicBrainzArtist } from "../types";
 import {
-  getCached,
-  setCached,
-  cacheKeyRecording,
-  cacheKeyRelease,
+    getCached,
+    setCached,
+    cacheKeyRecording,
+    cacheKeyRelease,
 } from "./cache";
 
 /**
@@ -55,7 +55,7 @@ export async function searchByTitle(
         offset,
       });
 
-      const rawRecordings = result.recordings ?? [];
+      const rawRecordings = (result.recordings ?? []) as MusicBrainzRecording[];
       recordings.push(...rawRecordings);
 
       // Performance: for long/specific titles, if the first page already contains
@@ -121,7 +121,7 @@ export async function searchByTitle(
 
       const result = await mb.search("recording", searchParams);
 
-      const rawRecordings = result.recordings ?? [];
+      const rawRecordings = (result.recordings ?? []) as MusicBrainzRecording[];
       console.log(
         `[MB SEARCH] Response: ${rawRecordings.length} recordings at offset ${offset}`,
       );
@@ -129,14 +129,18 @@ export async function searchByTitle(
       if (rawRecordings.length > 0) {
         console.log(
           "[MB SEARCH] Sample recordings:",
-          rawRecordings.slice(0, 3).map((r) => ({
-            id: r.id,
-            title: r.title,
-            artist:
-              r["artist-credit"]?.[0]?.name ||
-              r["artist-credit"]?.[0]?.artist?.name ||
-              "unknown",
-          })),
+          rawRecordings.slice(0, 3).map((r) => {
+            const firstCredit = r["artist-credit"]?.[0];
+            const artistName =
+              typeof firstCredit === "string"
+                ? firstCredit
+                : firstCredit?.name || firstCredit?.artist?.name || "unknown";
+            return {
+              id: r.id,
+              title: r.title,
+              artist: artistName,
+            };
+          }),
         );
       }
 
@@ -191,7 +195,7 @@ export async function searchByExactTitle(
         offset,
       });
 
-      const rawRecordings = result.recordings ?? [];
+      const rawRecordings = (result.recordings ?? []) as MusicBrainzRecording[];
       recordings.push(...rawRecordings);
 
       if (rawRecordings.length < pageSize) break;
@@ -239,7 +243,7 @@ export async function searchExactRecordingTitle(
         offset,
       });
 
-      const rawRecordings = result.recordings ?? [];
+      const rawRecordings = (result.recordings ?? []) as MusicBrainzRecording[];
       recordings.push(...rawRecordings);
 
       if (rawRecordings.length < pageSize) break;
@@ -286,7 +290,7 @@ export async function searchByTitleAndArtist(
   const run = async (t: string) => {
     const query = `recording:"${t}" AND artist:"${qArtist}"`;
     const result = await mb.search("recording", { query, limit });
-    return result.recordings ?? [];
+    return (result.recordings ?? []) as MusicBrainzRecording[];
   };
 
   // MusicBrainz quoted queries can be case-sensitive; if the user typed a
@@ -376,8 +380,9 @@ export async function searchReleaseByTitle(
               const recordingWithRelease: MusicBrainzRecording = {
                 id: recording.id,
                 title: recording.title,
-                "artist-credit":
-                  recording["artist-credit"] ?? release["artist-credit"],
+                "artist-credit": (
+                  recording["artist-credit"] ?? release["artist-credit"]
+                ) as MusicBrainzRecording["artist-credit"],
                 length: recording.length,
                 releases: [
                   {
@@ -435,7 +440,7 @@ export async function searchByTitleAndArtistName(
 
   try {
     const result = await mb.search("recording", { query, limit });
-    const recordings = result.recordings ?? [];
+    const recordings = (result.recordings ?? []) as MusicBrainzRecording[];
     void setCached(cacheKey, recordings);
     return recordings;
   } catch (err) {
@@ -458,5 +463,5 @@ export async function searchArtist(
   if (artists.length === 0) return null;
 
   // Return highest scoring artist
-  return artists[0];
+  return artists[0] as MusicBrainzArtist;
 }

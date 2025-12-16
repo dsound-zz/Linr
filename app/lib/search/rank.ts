@@ -73,6 +73,13 @@ export function scoreRecording(
   const scoringReleases =
     nonCompilationReleases.length > 0 ? nonCompilationReleases : releases;
 
+  // Additional penalty for artists commonly associated with cover versions
+  const artistLower = recording.artist.toLowerCase();
+  const isCoverArtist = /\b(kidz bop|karaoke|tribute|american idol|pitch perfect|glee cast)\b/i.test(artistLower);
+  if (isCoverArtist) {
+    score -= 50; // Penalty for known cover/karaoke artists
+  }
+
   // Title matching (highest priority)
   if (recTitle && qTitle) {
     const isSingleWordQuery = qTitle.split(" ").length === 1;

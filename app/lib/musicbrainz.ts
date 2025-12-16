@@ -1,11 +1,11 @@
 // lib/musicbrainz.ts
 import { MusicBrainzApi } from "musicbrainz-api";
 import type {
-  SearchResultItem,
-  MusicBrainzRecording,
-  MusicBrainzArtistCreditEntry,
-  MusicBrainzArtist,
-  MusicBrainzRelease,
+    SearchResultItem,
+    MusicBrainzRecording,
+    MusicBrainzArtistCreditEntry,
+    MusicBrainzArtist,
+    MusicBrainzRelease,
 } from "./types";
 import { logMusicBrainzResponse } from "./logger";
 
@@ -77,7 +77,7 @@ export async function searchGlobalRecordings(
       await logMusicBrainzResponse("search", result, query);
     }
 
-    recordings.push(...(result.recordings ?? []));
+    recordings.push(...((result.recordings ?? []) as MusicBrainzRecording[]));
 
     if (!result.recordings || result.recordings.length < pageSize) break;
   }
@@ -136,7 +136,7 @@ export async function searchRecordingsByExactTitle(
       await logMusicBrainzResponse("search", result, query);
     }
 
-    recordings.push(...(result.recordings ?? []));
+    recordings.push(...((result.recordings ?? []) as MusicBrainzRecording[]));
 
     if (!result.recordings || result.recordings.length < pageSize) break;
   }
@@ -194,7 +194,7 @@ export async function searchRecordingsByExactTitleNoRepeats(
       await logMusicBrainzResponse("search", result, query);
     }
 
-    recordings.push(...(result.recordings ?? []));
+    recordings.push(...((result.recordings ?? []) as MusicBrainzRecording[]));
 
     if (!result.recordings || result.recordings.length < pageSize) break;
   }
@@ -314,6 +314,31 @@ export async function lookupReleaseGroup(id: string): Promise<unknown> {
   return releaseGroup;
 }
 
+export async function lookupArtist(id: string): Promise<MusicBrainzArtist> {
+  const mb = getMBClient();
+
+  const lookup = mb.lookup as unknown as (
+    this: unknown,
+    entity: string,
+    mbid: string,
+    inc: string[],
+  ) => Promise<MusicBrainzArtist>;
+
+  const artist = await lookup.call(mb, "artist", id, [
+    "aliases",
+    "tags",
+  ]);
+
+  await logMusicBrainzResponse(
+    "lookup",
+    artist as unknown as MusicBrainzRecording,
+    undefined,
+    id,
+  );
+
+  return artist;
+}
+
 export async function searchArtistByName(
   name: string,
 ): Promise<MusicBrainzArtist | null> {
@@ -329,7 +354,7 @@ export async function searchArtistByName(
   if (artists.length === 0) return null;
 
   // pick the highest score
-  return artists[0];
+  return artists[0] as MusicBrainzArtist;
 }
 
 export async function searchRecordingsByTitleForArtist(
@@ -344,7 +369,7 @@ export async function searchRecordingsByTitleForArtist(
   // Log the raw response before processing
   await logMusicBrainzResponse("search", result, query);
 
-  return result.recordings || [];
+  return (result.recordings || []) as MusicBrainzRecording[];
 }
 
 export async function searchRecordingsByTitleAndArtistName(
@@ -358,5 +383,5 @@ export async function searchRecordingsByTitleAndArtistName(
 
   await logMusicBrainzResponse("search", result, query);
 
-  return result.recordings || [];
+  return (result.recordings || []) as MusicBrainzRecording[];
 }

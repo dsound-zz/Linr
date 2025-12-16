@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { ContributorProfile } from "@/lib/types";
-import { getMBClient, lookupRecording } from "@/lib/musicbrainz";
+import { getMBClient, lookupRecording, lookupArtist } from "@/lib/musicbrainz";
 import type { MusicBrainzRecording } from "@/lib/types";
 
 /**
@@ -57,7 +57,8 @@ export async function GET(request: NextRequest) {
     }
 
     // Use the top matching artist
-    const artistId = artists[0].id;
+    const topArtist = artists[0];
+    const artistId = topArtist.id;
     if (!artistId) {
       return NextResponse.json({
         name,
@@ -69,17 +70,44 @@ export async function GET(request: NextRequest) {
       } as ContributorProfile);
     }
 
+    // Get the artist's official name and aliases for better matching
+    let officialName = name;
+    const aliases = new Set<string>([name.toLowerCase()]);
+    
+    try {
+      const fullArtist = await lookupArtist(artistId);
+      if (fullArtist.name) {
+        officialName = fullArtist.name;
+        aliases.add(fullArtist.name.toLowerCase());
+      }
+      
+      // Add all aliases from MusicBrainz
+      if (Array.isArray(fullArtist.aliases)) {
+        for (const alias of fullArtist.aliases) {
+          if (alias.name) {
+            aliases.add(alias.name.toLowerCase());
+          }
+        }
+      }
+    } catch {
+      // If lookup fails, just use the search result name
+    }
+
     // Step 2: Search for all recordings that credit this artist
-    // This includes both recordings where they're the main artist and contributor
-    const mainArtistQuery = `arid:${artistId}`;
+    // MusicBrainz supports multiple query types:
+    // - arid: main artist credits (performer)
+    // - artistname: searches in relationships (producer, writer, etc.)
+    // We need BOTH to get complete credits for producers/writers
     const pageSize = 100;
-    const maxResults = 200;
+    const maxResults = 400; // Increased to capture more producer/writer credits
     const recordings: MusicBrainzRecording[] = [];
     const recordingIds = new Set<string>();
 
+    // Query 1: Find recordings where they're the main artist (performer)
+    const mainArtistQuery = `arid:${artistId}`;
     for (
       let offset = 0;
-      offset < maxResults && recordings.length < maxResults;
+      offset < maxResults / 2 && recordings.length < maxResults;
       offset += pageSize
     ) {
       const result = await mb.search("recording", {
@@ -92,11 +120,39 @@ export async function GET(request: NextRequest) {
       for (const rec of rawRecordings) {
         if (rec.id && !recordingIds.has(rec.id)) {
           recordingIds.add(rec.id);
-          recordings.push(rec);
+          recordings.push(rec as MusicBrainzRecording);
         }
       }
 
       if (rawRecordings.length < pageSize) break;
+    }
+
+    // Query 2: Find recordings where they're a credited contributor (producer, writer, etc.)
+    // Try multiple search queries using official name and common aliases
+    const searchQueries = Array.from(aliases).map(alias => `artist:"${alias}"`);
+    
+    for (const query of searchQueries) {
+      for (
+        let offset = 0;
+        offset < maxResults / 2 && recordings.length < maxResults;
+        offset += pageSize
+      ) {
+        const result = await mb.search("recording", {
+          query,
+          limit: pageSize,
+          offset,
+        });
+
+        const rawRecordings = result.recordings ?? [];
+        for (const rec of rawRecordings) {
+          if (rec.id && !recordingIds.has(rec.id)) {
+            recordingIds.add(rec.id);
+            recordings.push(rec as MusicBrainzRecording);
+          }
+        }
+
+        if (rawRecordings.length < pageSize) break;
+      }
     }
 
     if (recordings.length === 0) {
@@ -166,20 +222,26 @@ export async function GET(request: NextRequest) {
       // Extract roles from artist-credit relationships
       const roles = new Set<string>();
 
-      // Check artist-credit for the matching name
+      // Check artist-credit for the matching name or aliases
       const artistCredits = recording["artist-credit"] ?? [];
       for (const credit of artistCredits) {
         // Handle both string and object types in artist-credit
+        let creditName: string | undefined;
+        let creditArtistId: string | undefined;
+
         if (typeof credit === "string") {
-          if (credit.toLowerCase().includes(name.toLowerCase())) {
-            roles.add("performer");
-          }
+          creditName = credit;
         } else {
-          const creditName = credit.name || credit.artist?.name;
-          if (creditName?.toLowerCase().includes(name.toLowerCase())) {
-            // This is a performing artist credit
-            roles.add("performer");
-          }
+          creditName = credit.name || credit.artist?.name;
+          creditArtistId = credit.artist?.id;
+        }
+
+        // Match by ID or by name/aliases
+        if (
+          creditArtistId === artistId ||
+          (creditName && aliases.has(creditName.toLowerCase()))
+        ) {
+          roles.add("performer");
         }
       }
 
@@ -193,7 +255,12 @@ export async function GET(request: NextRequest) {
         const relArtistName = relArtist?.name ?? "";
         const relArtistId = relArtist?.id ?? "";
 
-        if (relArtistId === artistId || relArtistName.toLowerCase().includes(name.toLowerCase())) {
+        // Match by ID first, then by name/aliases
+        const isMatch =
+          relArtistId === artistId ||
+          aliases.has(relArtistName.toLowerCase());
+
+        if (isMatch && relType) {
           // Get instrument/attribute if available for more specific role
           const attributes = rel.attributes ?? [];
           const attributeStr = attributes.join(", ");

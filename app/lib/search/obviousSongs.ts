@@ -192,10 +192,11 @@ Linkin Park – In the End
 The Killers – Mr. Brightside
 Imagine Dragons – Radioactive
 Usher – Yeah!
-Alicia Keys – Fallin’
+Alicia Keys – Fallin'
 Darude – Sandstorm
 Zedd – Clarity
 Disclosure – Latch
+Kelly Clarkson – Since U Been Gone
 `);
 
 // Extra aliases / typos that should map to a canonical title/artist.
