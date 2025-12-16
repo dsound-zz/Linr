@@ -162,7 +162,7 @@ export function normalizeCredits(credits: Credit[]): Credit[] {
         instrument: credit.instrument
           ? decodeHtmlEntities(credit.instrument).trim()
           : undefined,
-      };
+      } as Credit;
     })
     .filter((credit): credit is Credit => credit !== null);
 }
