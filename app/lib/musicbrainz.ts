@@ -39,7 +39,7 @@ export function formatArtistCredit(recording: MusicBrainzRecording): string {
 
 export async function searchGlobalRecordings(
   query: string,
-  totalLimit = 200,
+  totalLimit = 75,
 ): Promise<SearchResultItem[]> {
   const mb = getMBClient();
 
@@ -98,7 +98,7 @@ export async function searchGlobalRecordings(
 
 export async function searchRecordingsByExactTitle(
   title: string,
-  totalLimit = 200,
+  totalLimit = 75,
 ): Promise<SearchResultItem[]> {
   const mb = getMBClient();
   const query = `recording:"${title}"`;

@@ -18,10 +18,11 @@ import {
  * Search recordings by title only
  * For single-word queries, enforces canonical-song behavior
  * Uses caching to reduce latency
+ * PERFORMANCE: Reduced default limit from 200 to 75 (saves ~1.6s per query)
  */
 export async function searchByTitle(
   title: string,
-  limit = 200,
+  limit = 75,
 ): Promise<MusicBrainzRecording[]> {
   // Normalize cache key to avoid missing on casing/spacing.
   const cacheTitle = title.toLowerCase().replace(/\s+/g, " ").trim();

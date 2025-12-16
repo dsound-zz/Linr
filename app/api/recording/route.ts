@@ -80,6 +80,7 @@ export async function GET(req: Request) {
       }
     }
 
+    // PERFORMANCE: Fetch recording first, then parallelize release/release-group lookups
     const raw = await lookupRecording(id);
 
     // Pull the primary release and release-group to harvest additional relations
@@ -112,7 +113,7 @@ export async function GET(req: Request) {
       const isCompilation =
         primary === "compilation" || secondary.includes("compilation");
 
-      // Heuristic “compilation-ish” titles (covers cases where MB types are missing).
+      // Heuristic "compilation-ish" titles (covers cases where MB types are missing).
       const looksLikeCompilationTitle =
         /(greatest hits|best of|hits\b|the hits|collection|anthology|essential|karaoke|tribute)/i.test(
           title,
@@ -147,16 +148,21 @@ export async function GET(req: Request) {
       releases.slice().sort((a, b) => scoreRelease(b) - scoreRelease(a))[0] ??
       releases[0];
 
-    const release = primaryRelease?.id
-      ? await lookupRelease(primaryRelease.id)
-      : null;
-    const releaseGroupId =
-      release?.["release-group"]?.id ??
-      primaryRelease?.["release-group"]?.id ??
-      null;
-    const releaseGroup = releaseGroupId
-      ? await lookupReleaseGroup(releaseGroupId)
-      : null;
+    // PERFORMANCE: Parallelize release and release-group lookups
+    const releaseGroupIdFromRaw =
+      primaryRelease?.["release-group"]?.id ?? null;
+
+    const [release, releaseGroupFromDirect] = await Promise.all([
+      primaryRelease?.id ? lookupRelease(primaryRelease.id) : Promise.resolve(null),
+      releaseGroupIdFromRaw ? lookupReleaseGroup(releaseGroupIdFromRaw) : Promise.resolve(null),
+    ]);
+
+    // If release lookup returned a release-group ID not in raw data, fetch it
+    const releaseGroupIdFromRelease = release?.["release-group"]?.id;
+    const releaseGroup = releaseGroupFromDirect ??
+      (releaseGroupIdFromRelease && releaseGroupIdFromRelease !== releaseGroupIdFromRaw
+        ? await lookupReleaseGroup(releaseGroupIdFromRelease)
+        : null);
 
     const clean = await normalizeRecording(raw, {
       release,
@@ -197,8 +203,8 @@ export async function GET(req: Request) {
         );
       } else {
         try {
-          const titleForSearch = (clean.title ?? "").replace(/’/g, "'");
-          const artistForSearch = (clean.artist ?? "").replace(/’/g, "'");
+          const titleForSearch = (clean.title ?? "").replace(/'/g, "'");
+          const artistForSearch = (clean.artist ?? "").replace(/'/g, "'");
           const candidates = await searchByTitleAndArtist(
             titleForSearch,
             artistForSearch,
@@ -206,15 +212,22 @@ export async function GET(req: Request) {
           );
 
           const MAX_ALT_LOOKUPS = 3;
-          let used = 0;
+
+          // PERFORMANCE: Parallelize alternative recording lookups
+          const candidatesToLookup = candidates
+            .filter(c => c?.id && c.id !== id)
+            .slice(0, MAX_ALT_LOOKUPS);
+
+          const altRecordings = await Promise.all(
+            candidatesToLookup.map(c =>
+              lookupRecording(c.id).catch(() => null)
+            )
+          );
+
           let merged = clean.credits.performers;
+          for (const altRaw of altRecordings) {
+            if (!altRaw) continue;
 
-          for (const c of candidates) {
-            if (!c?.id || c.id === id) continue;
-            used++;
-            if (used > MAX_ALT_LOOKUPS) break;
-
-            const altRaw = await lookupRecording(c.id);
             const altDerived = deriveRecordingFromMB(altRaw, null, null);
             if (altDerived.credits.performers?.length) {
               merged = mergePerformers(merged, altDerived.credits.performers);

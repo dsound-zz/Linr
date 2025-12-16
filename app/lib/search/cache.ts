@@ -15,7 +15,9 @@ interface CacheEntry<T> {
   timestamp: number;
 }
 
-const CACHE_TTL_MS = 300000; // 5 minutes
+// PERFORMANCE: Increased from 5 minutes to 1 hour for better hit rates
+// Music metadata rarely changes, so longer TTL is safe
+const CACHE_TTL_MS = 3600000; // 1 hour (60 * 60 * 1000)
 const CACHE_TTL_SECONDS = Math.ceil(CACHE_TTL_MS / 1000);
 const cache = new Map<string, CacheEntry<unknown>>();
 
