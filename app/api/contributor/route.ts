@@ -3,6 +3,229 @@ import type { ContributorProfile } from "@/lib/types";
 import { getMBClient, lookupRecording, lookupArtist } from "@/lib/musicbrainz";
 import type { MusicBrainzRecording } from "@/lib/types";
 
+const MAX_CONTRIBUTOR_RECORDINGS = 400;
+const CONTRIBUTOR_PAGE_SIZE = 100;
+const WORK_PAGE_SIZE = 50;
+
+type QueryPlan = {
+  query: string;
+  offset: number;
+  done: boolean;
+};
+
+interface ContributorCache {
+  artistId: string;
+  aliasKeys: Set<string>;
+  aliasNames: Set<string>;
+  queryPlan: QueryPlan[];
+  querySet: Set<string>;
+  recordings: MusicBrainzRecording[];
+  recordingIds: Set<string>;
+  processing?: Promise<void>;
+  backgroundPromise?: Promise<void>;
+  completed: boolean;
+  workQueryPlan: QueryPlan[];
+  workQuerySet: Set<string>;
+  workIds: Set<string>;
+}
+
+const contributorCache = new Map<string, ContributorCache>();
+
+const escapeQueryValue = (value: string) => value.replace(/"/g, '\\"');
+
+const queryTemplates = [
+  (value: string) => `artist:"${escapeQueryValue(value)}"`,
+  (value: string) => `artistname:"${escapeQueryValue(value)}"`,
+  (value: string) => `creditname:"${escapeQueryValue(value)}"`,
+];
+
+function addAliasQueries(state: ContributorCache, alias: string) {
+  for (const template of queryTemplates) {
+    const query = template(alias);
+    if (state.querySet.has(query)) continue;
+    state.querySet.add(query);
+    state.queryPlan.push({ query, offset: 0, done: false });
+  }
+}
+
+function ensureStateHasAlias(state: ContributorCache, alias?: string) {
+  if (typeof alias !== "string") return;
+  const trimmed = alias.trim();
+  if (trimmed.length === 0) return;
+  const normalized = trimmed.toLowerCase();
+  if (!state.aliasKeys.has(normalized)) {
+    state.aliasKeys.add(normalized);
+  }
+  if (state.aliasNames.has(trimmed)) return;
+  state.aliasNames.add(trimmed);
+  addAliasQueries(state, trimmed);
+  state.completed = false;
+}
+
+function buildContributorCache(
+  artistId: string,
+  initialAliases: string[],
+): ContributorCache {
+  const state: ContributorCache = {
+    artistId,
+    aliasKeys: new Set<string>(),
+    aliasNames: new Set<string>(),
+    queryPlan: [{ query: `arid:${artistId}`, offset: 0, done: false }],
+    querySet: new Set<string>([`arid:${artistId}`]),
+    recordings: [],
+    recordingIds: new Set<string>(),
+    completed: false,
+    workQueryPlan: [{ query: `arid:${artistId}`, offset: 0, done: false }],
+    workQuerySet: new Set<string>([`arid:${artistId}`]),
+    workIds: new Set<string>(),
+  };
+
+  initialAliases.forEach((alias) => ensureStateHasAlias(state, alias));
+  return state;
+}
+
+function addRecordingToState(state: ContributorCache, rec: MusicBrainzRecording) {
+  const id = rec.id || rec["id"] || rec.mbid;
+  if (
+    typeof id !== "string" ||
+    state.recordingIds.has(id) ||
+    state.recordings.length >= MAX_CONTRIBUTOR_RECORDINGS
+  ) {
+    return;
+  }
+  state.recordingIds.add(id);
+  state.recordings.push(rec);
+  if (state.recordings.length >= MAX_CONTRIBUTOR_RECORDINGS) {
+    state.completed = true;
+  }
+}
+
+function addWorkRecordingQuery(state: ContributorCache, workId: string) {
+  const query = `workid:${workId}`;
+  if (state.querySet.has(query)) return;
+  state.querySet.add(query);
+  state.queryPlan.push({ query, offset: 0, done: false });
+  state.completed = false;
+}
+
+async function processWorkQueryPlan(
+  state: ContributorCache,
+  neededCount: number,
+  stopAfterNeeded: boolean,
+  mb: ReturnType<typeof getMBClient>,
+): Promise<void> {
+  for (const plan of state.workQueryPlan) {
+    if (plan.done) continue;
+
+    while (!plan.done && state.recordings.length < MAX_CONTRIBUTOR_RECORDINGS) {
+      const result = await mb.search("work", {
+        query: plan.query,
+        limit: WORK_PAGE_SIZE,
+        offset: plan.offset,
+      });
+
+      const works = result.works ?? [];
+      plan.offset += WORK_PAGE_SIZE;
+
+      if (works.length < WORK_PAGE_SIZE) {
+        plan.done = true;
+      }
+
+      for (const work of works) {
+        if (!work?.id || state.workIds.has(work.id)) continue;
+        state.workIds.add(work.id);
+        addWorkRecordingQuery(state, work.id);
+      }
+
+      if (stopAfterNeeded && state.recordings.length >= neededCount) {
+        return;
+      }
+
+      if (works.length === 0) {
+        plan.done = true;
+      }
+    }
+  }
+}
+
+async function processQueryPlan(
+  state: ContributorCache,
+  neededCount: number,
+  stopAfterNeeded: boolean,
+): Promise<void> {
+  const mb = getMBClient();
+  while (state.recordings.length < MAX_CONTRIBUTOR_RECORDINGS) {
+    let plan = state.queryPlan.find((candidate) => !candidate.done);
+
+    if (!plan) {
+      await processWorkQueryPlan(state, neededCount, stopAfterNeeded, mb);
+      plan = state.queryPlan.find((candidate) => !candidate.done);
+      if (!plan) break;
+      continue;
+    }
+
+    while (!plan.done && state.recordings.length < MAX_CONTRIBUTOR_RECORDINGS) {
+      const result = await mb.search("recording", {
+        query: plan.query,
+        limit: CONTRIBUTOR_PAGE_SIZE,
+        offset: plan.offset,
+      });
+
+      const rawRecordings = result.recordings ?? [];
+      plan.offset += CONTRIBUTOR_PAGE_SIZE;
+
+      if (rawRecordings.length < CONTRIBUTOR_PAGE_SIZE) {
+        plan.done = true;
+      }
+
+      for (const rec of rawRecordings) {
+        addRecordingToState(state, rec as MusicBrainzRecording);
+      }
+
+      if (stopAfterNeeded && state.recordings.length >= neededCount) {
+        return;
+      }
+
+      if (rawRecordings.length === 0) {
+        plan.done = true;
+      }
+
+      if (state.recordings.length >= MAX_CONTRIBUTOR_RECORDINGS) {
+        state.completed = true;
+        return;
+      }
+    }
+  }
+
+  if (
+    state.queryPlan.every((candidate) => candidate.done) &&
+    state.workQueryPlan.every((candidate) => candidate.done)
+  ) {
+    state.completed = true;
+  }
+}
+
+function startBackgroundFetch(state: ContributorCache) {
+  if (state.completed || state.backgroundPromise) return;
+  state.backgroundPromise = processQueryPlan(state, Infinity, false).finally(() => {
+    state.backgroundPromise = undefined;
+  });
+}
+
+async function ensureMinimumRecordings(
+  state: ContributorCache,
+  neededCount: number,
+): Promise<void> {
+  if (state.completed || state.recordings.length >= neededCount) return;
+  if (!state.processing) {
+    state.processing = processQueryPlan(state, neededCount, true).finally(() => {
+      state.processing = undefined;
+      startBackgroundFetch(state);
+    });
+  }
+  await state.processing;
+}
+
 /**
  * GET /api/contributor
  *
@@ -70,92 +293,51 @@ export async function GET(request: NextRequest) {
       } as ContributorProfile);
     }
 
-    // Get the artist's official name and aliases for better matching
-    let officialName = name;
-    const aliases = new Set<string>([name.toLowerCase()]);
-    
-    try {
-      const fullArtist = await lookupArtist(artistId);
-      if (fullArtist.name) {
-        officialName = fullArtist.name;
-        aliases.add(fullArtist.name.toLowerCase());
-      }
-      
-      // Add all aliases from MusicBrainz
-      if (Array.isArray(fullArtist.aliases)) {
-        for (const alias of fullArtist.aliases) {
-          if (alias.name) {
-            aliases.add(alias.name.toLowerCase());
+    const aliasCandidates = new Set<string>();
+    const addAliasCandidate = (value?: string) => {
+      if (typeof value !== "string") return;
+      const trimmed = value.trim();
+      if (trimmed.length === 0) return;
+      aliasCandidates.add(trimmed);
+    };
+
+    addAliasCandidate(name);
+    if (topArtist.name) {
+      addAliasCandidate(topArtist.name);
+    }
+
+    let state = contributorCache.get(artistId);
+    if (!state) {
+      try {
+        const fullArtist = await lookupArtist(artistId);
+        if (fullArtist.name) {
+          addAliasCandidate(fullArtist.name);
+        }
+
+        if (Array.isArray(fullArtist.aliases)) {
+          for (const alias of fullArtist.aliases) {
+            addAliasCandidate(alias.name);
           }
         }
-      }
-    } catch {
-      // If lookup fails, just use the search result name
-    }
-
-    // Step 2: Search for all recordings that credit this artist
-    // MusicBrainz supports multiple query types:
-    // - arid: main artist credits (performer)
-    // - artistname: searches in relationships (producer, writer, etc.)
-    // We need BOTH to get complete credits for producers/writers
-    const pageSize = 100;
-    const maxResults = 400; // Increased to capture more producer/writer credits
-    const recordings: MusicBrainzRecording[] = [];
-    const recordingIds = new Set<string>();
-
-    // Query 1: Find recordings where they're the main artist (performer)
-    const mainArtistQuery = `arid:${artistId}`;
-    for (
-      let offset = 0;
-      offset < maxResults / 2 && recordings.length < maxResults;
-      offset += pageSize
-    ) {
-      const result = await mb.search("recording", {
-        query: mainArtistQuery,
-        limit: pageSize,
-        offset,
-      });
-
-      const rawRecordings = result.recordings ?? [];
-      for (const rec of rawRecordings) {
-        if (rec.id && !recordingIds.has(rec.id)) {
-          recordingIds.add(rec.id);
-          recordings.push(rec as MusicBrainzRecording);
-        }
+      } catch {
+        // If lookup fails, continue with the variants we already collected
       }
 
-      if (rawRecordings.length < pageSize) break;
-    }
-
-    // Query 2: Find recordings where they're a credited contributor (producer, writer, etc.)
-    // Try multiple search queries using official name and common aliases
-    const searchQueries = Array.from(aliases).map(alias => `artist:"${alias}"`);
-    
-    for (const query of searchQueries) {
-      for (
-        let offset = 0;
-        offset < maxResults / 2 && recordings.length < maxResults;
-        offset += pageSize
-      ) {
-        const result = await mb.search("recording", {
-          query,
-          limit: pageSize,
-          offset,
-        });
-
-        const rawRecordings = result.recordings ?? [];
-        for (const rec of rawRecordings) {
-          if (rec.id && !recordingIds.has(rec.id)) {
-            recordingIds.add(rec.id);
-            recordings.push(rec as MusicBrainzRecording);
-          }
-        }
-
-        if (rawRecordings.length < pageSize) break;
+      state = buildContributorCache(artistId, Array.from(aliasCandidates));
+      contributorCache.set(artistId, state);
+    } else {
+      for (const alias of aliasCandidates) {
+        ensureStateHasAlias(state, alias);
       }
     }
 
-    if (recordings.length === 0) {
+    const neededCount = Math.min(
+      Math.max(offset + limit, 0),
+      MAX_CONTRIBUTOR_RECORDINGS,
+    );
+    await ensureMinimumRecordings(state, neededCount);
+
+    if (state.recordings.length === 0) {
       return NextResponse.json({
         name,
         totalContributions: 0,
@@ -166,9 +348,13 @@ export async function GET(request: NextRequest) {
       } as ContributorProfile);
     }
 
+    const aliasKeys = state.aliasKeys;
+
     // Step 3: For the requested page, do detailed lookups to get relationship data
-    const totalRecordings = recordings.length;
-    const pageRecordings = recordings.slice(offset, offset + limit);
+    const totalRecordings = state.completed
+      ? state.recordings.length
+      : Math.max(state.recordings.length, neededCount);
+    const pageRecordings = state.recordings.slice(offset, offset + limit);
 
     // Do detailed lookups in parallel for this page
     const detailedRecordings = await Promise.all(
@@ -239,7 +425,7 @@ export async function GET(request: NextRequest) {
         // Match by ID or by name/aliases
         if (
           creditArtistId === artistId ||
-          (creditName && aliases.has(creditName.toLowerCase()))
+          (creditName && aliasKeys.has(creditName.toLowerCase()))
         ) {
           roles.add("performer");
         }
@@ -258,7 +444,7 @@ export async function GET(request: NextRequest) {
         // Match by ID first, then by name/aliases
         const isMatch =
           relArtistId === artistId ||
-          aliases.has(relArtistName.toLowerCase());
+          aliasKeys.has(relArtistName.toLowerCase());
 
         if (isMatch && relType) {
           // Get instrument/attribute if available for more specific role
@@ -344,11 +530,14 @@ export async function GET(request: NextRequest) {
       0,
     );
 
+    const hasMore =
+      !state.completed || offset + limit < state.recordings.length;
+
     const profile: ContributorProfile = {
       name,
       totalContributions,
       totalRecordings,
-      hasMore: offset + limit < totalRecordings,
+      hasMore,
       roleBreakdown,
       contributions,
     };

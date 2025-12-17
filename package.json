@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "dev:pw": "next dev & sleep 3 && npx playwright open http://localhost:3000", 
     "lint": "eslint",
     "test": "vitest",
     "test:ui": "vitest --ui",

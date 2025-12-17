@@ -398,8 +398,13 @@ function mergeNormalized(
   base: NormalizedRecording,
   ai: Partial<NormalizedRecording> | null | undefined,
 ): NormalizedRecording {
-  const mergeString = (a: string | null, b?: string | null) =>
-    (b ?? "").trim() || a;
+  const sanitizeString = (value?: string | null | undefined): string => {
+    if (typeof value !== "string") return "";
+    return value.trim();
+  };
+
+  const mergeString = (a: string | null | undefined, b?: string | null | undefined) =>
+    sanitizeString(b) || (typeof a === "string" ? a : "");
 
   const mergeArray = (a: string[], b?: string[]) => {
     const map = new Map<string, string>();
