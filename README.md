@@ -55,14 +55,9 @@ OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-4o-mini
 ```
 
-### Optional: Upstash Redis cache
+### Caching
 
-If set, cache entries persist across restarts/instances; otherwise caching is in-memory only.
-
-```bash
-UPSTASH_REDIS_REST_URL=...
-UPSTASH_REDIS_REST_TOKEN=...
-```
+LINR uses in-memory caching for MusicBrainz and Wikipedia API calls with a 1-hour TTL. Cache is cleared on server restart.
 
 ---
 

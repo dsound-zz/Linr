@@ -2,10 +2,37 @@ import { NextRequest, NextResponse } from "next/server";
 import type { ContributorProfile } from "@/lib/types";
 import { getMBClient, lookupRecording, lookupArtist } from "@/lib/musicbrainz";
 import type { MusicBrainzRecording } from "@/lib/types";
+import { verifyContributor, filterRecordings, enrichWithKnownWorks } from "@/lib/ai-contributor";
 
 const MAX_CONTRIBUTOR_RECORDINGS = 400;
 const CONTRIBUTOR_PAGE_SIZE = 100;
 const WORK_PAGE_SIZE = 50;
+
+// Optional: Enable work-based queries (can be disabled for performance)
+const ENABLE_WORK_QUERIES = process.env.ENABLE_WORK_QUERIES !== 'false';
+
+// Performance tracking
+interface PerformanceMetrics {
+  totalDuration: number;
+  artistSearchMs: number;
+  artistLookupMs: number;
+  recordingSearchMs: number;
+  recordingLookupsMs: number;
+  workSearchMs: number;
+  queryCounts: {
+    artistSearch: number;
+    artistLookup: number;
+    recordingSearch: number;
+    recordingLookups: number;
+    workSearch: number;
+  };
+  resultCounts: {
+    totalRecordings: number;
+    fromRecordingSearch: number;
+    fromWorkSearch: number;
+    aliases: number;
+  };
+}
 
 type QueryPlan = {
   query: string;
@@ -31,11 +58,54 @@ interface ContributorCache {
 
 const contributorCache = new Map<string, ContributorCache>();
 
+// Cache for recording lookups (shared across all contributors)
+const RECORDING_CACHE_MAX_SIZE = 1000;
+const RECORDING_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+interface CachedRecording {
+  recording: MusicBrainzRecording;
+  timestamp: number;
+}
+
+const recordingCache = new Map<string, CachedRecording>();
+
+// Timeout wrapper to prevent hanging on slow MusicBrainz requests
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  const timeout = new Promise<null>((resolve) =>
+    setTimeout(() => resolve(null), timeoutMs)
+  );
+  return Promise.race([promise, timeout]);
+}
+
+async function lookupRecordingCached(id: string): Promise<MusicBrainzRecording | null> {
+  const cached = recordingCache.get(id);
+  if (cached && Date.now() - cached.timestamp < RECORDING_CACHE_TTL_MS) {
+    return cached.recording;
+  }
+
+  try {
+    // Add 10 second timeout to prevent hanging on slow requests
+    const recording = await withTimeout(lookupRecording(id), 10000);
+    if (recording) {
+      // Simple LRU: if cache is full, remove oldest entries
+      if (recordingCache.size >= RECORDING_CACHE_MAX_SIZE) {
+        const oldestKey = recordingCache.keys().next().value;
+        if (oldestKey) recordingCache.delete(oldestKey);
+      }
+      recordingCache.set(id, { recording, timestamp: Date.now() });
+    }
+    return recording;
+  } catch {
+    return null;
+  }
+}
+
 const escapeQueryValue = (value: string) => value.replace(/"/g, '\\"');
 
+// Optimized: reduced from 3 to 2 query templates
+// artistname and creditname often return similar results
 const queryTemplates = [
   (value: string) => `artist:"${escapeQueryValue(value)}"`,
-  (value: string) => `artistname:"${escapeQueryValue(value)}"`,
   (value: string) => `creditname:"${escapeQueryValue(value)}"`,
 ];
 
@@ -158,10 +228,15 @@ async function processQueryPlan(
     let plan = state.queryPlan.find((candidate) => !candidate.done);
 
     if (!plan) {
-      await processWorkQueryPlan(state, neededCount, stopAfterNeeded, mb);
-      plan = state.queryPlan.find((candidate) => !candidate.done);
-      if (!plan) break;
-      continue;
+      // Only process work queries if enabled
+      if (ENABLE_WORK_QUERIES) {
+        await processWorkQueryPlan(state, neededCount, stopAfterNeeded, mb);
+        plan = state.queryPlan.find((candidate) => !candidate.done);
+        if (!plan) break;
+        continue;
+      } else {
+        break;
+      }
     }
 
     while (!plan.done && state.recordings.length < MAX_CONTRIBUTOR_RECORDINGS) {
@@ -233,9 +308,10 @@ async function ensureMinimumRecordings(
  * Searches MusicBrainz for recordings with this person in artist-rels.
  *
  * Strategy:
- * 1. Fast search to get all recording IDs (up to 200)
- * 2. Do detailed lookups for first 20 recordings to get relationship data
- * 3. Return quickly with rich data for first page
+ * 1. Fast search to get all recording IDs (up to 400)
+ * 2. Do detailed lookups for current page only to get relationship data
+ * 3. Return quickly with rich data for current page
+ * 4. Background fetch continues to load more recordings
  *
  * Query params:
  *   - name: The contributor's name (required)
@@ -243,13 +319,41 @@ async function ensureMinimumRecordings(
  *   - offset: Offset for pagination (default 0)
  */
 export async function GET(request: NextRequest) {
+  const startTime = Date.now();
   const { searchParams } = new URL(request.url);
   const name = searchParams.get("name");
+  const mbid = searchParams.get("mbid"); // Artist MBID for exact matching
   const limitParam = searchParams.get("limit");
   const offsetParam = searchParams.get("offset");
+  const fromSong = searchParams.get("from_song"); // Originating song title for context
+  const fromArtist = searchParams.get("from_artist"); // Originating song artist for context
+  const fromRoles = searchParams.get("from_roles"); // Roles in originating song (comma-separated)
 
   const limit = limitParam ? Math.min(parseInt(limitParam, 10), 50) : 20;
   const offset = offsetParam ? parseInt(offsetParam, 10) : 0;
+
+  // Metrics tracking
+  const metrics: PerformanceMetrics = {
+    totalDuration: 0,
+    artistSearchMs: 0,
+    artistLookupMs: 0,
+    recordingSearchMs: 0,
+    recordingLookupsMs: 0,
+    workSearchMs: 0,
+    queryCounts: {
+      artistSearch: 0,
+      artistLookup: 0,
+      recordingSearch: 0,
+      recordingLookups: 0,
+      workSearch: 0,
+    },
+    resultCounts: {
+      totalRecordings: 0,
+      fromRecordingSearch: 0,
+      fromWorkSearch: 0,
+      aliases: 0,
+    },
+  };
 
   if (!name || typeof name !== "string" || name.trim().length === 0) {
     return NextResponse.json(
@@ -261,36 +365,59 @@ export async function GET(request: NextRequest) {
   try {
     const mb = getMBClient();
 
-    // Step 1: Find the artist by name to get their MBID
-    const artistSearchResult = await mb.search("artist", {
-      query: `artist:"${name.trim()}"`,
-      limit: 5,
-    });
+    let artistId: string;
+    let topArtist: any;
 
-    const artists = artistSearchResult.artists ?? [];
-    if (artists.length === 0) {
-      return NextResponse.json({
-        name,
-        totalContributions: 0,
-        totalRecordings: 0,
-        hasMore: false,
-        roleBreakdown: [],
-        contributions: [],
-      } as ContributorProfile);
-    }
+    // If MBID is provided, use it directly (exact match from song credits)
+    if (mbid && typeof mbid === "string" && mbid.trim().length > 0) {
+      artistId = mbid.trim();
 
-    // Use the top matching artist
-    const topArtist = artists[0];
-    const artistId = topArtist.id;
-    if (!artistId) {
-      return NextResponse.json({
-        name,
-        totalContributions: 0,
-        totalRecordings: 0,
-        hasMore: false,
-        roleBreakdown: [],
-        contributions: [],
-      } as ContributorProfile);
+      // Fetch artist details for name and aliases
+      const artistLookupStart = Date.now();
+      try {
+        topArtist = await lookupArtist(artistId);
+        metrics.artistLookupMs = Date.now() - artistLookupStart;
+        metrics.queryCounts.artistLookup = 1;
+      } catch {
+        // If lookup fails, continue with just the MBID
+        metrics.artistLookupMs = Date.now() - artistLookupStart;
+        topArtist = { id: artistId, name: name };
+      }
+    } else {
+      // Fall back to search by name if no MBID provided
+      const artistSearchStart = Date.now();
+      const artistSearchResult = await mb.search("artist", {
+        query: `artist:"${name.trim()}"`,
+        limit: 5,
+      });
+      metrics.artistSearchMs = Date.now() - artistSearchStart;
+      metrics.queryCounts.artistSearch = 1;
+
+      const artists = artistSearchResult.artists ?? [];
+      if (artists.length === 0) {
+        return NextResponse.json({
+          name,
+          totalContributions: 0,
+          totalRecordings: 0,
+          hasMore: false,
+          roleBreakdown: [],
+          contributions: [],
+        } as ContributorProfile);
+      }
+
+      // Use the top matching artist
+      topArtist = artists[0];
+      artistId = topArtist.id;
+      if (!artistId) {
+        return NextResponse.json({
+          name,
+          totalContributions: 0,
+          totalRecordings: 0,
+          hasMore: false,
+          roleBreakdown: [],
+          contributions: [],
+        } as ContributorProfile);
+      }
     }
 
     const aliasCandidates = new Set<string>();
@@ -301,15 +428,24 @@ export async function GET(request: NextRequest) {
       aliasCandidates.add(trimmed);
     };
 
+    // Start with minimal aliases: just the search name and artist name
     addAliasCandidate(name);
     if (topArtist.name) {
       addAliasCandidate(topArtist.name);
     }
 
     let state = contributorCache.get(artistId);
+    let aliasesExpanded = false;
+
     if (!state) {
+      // For new contributors, always fetch full aliases to ensure completeness
+      // This is especially important for prolific contributors like Max Martin
+      const artistLookupStart = Date.now();
       try {
         const fullArtist = await lookupArtist(artistId);
+        metrics.artistLookupMs = Date.now() - artistLookupStart;
+        metrics.queryCounts.artistLookup = 1;
+
         if (fullArtist.name) {
           addAliasCandidate(fullArtist.name);
         }
@@ -320,12 +456,17 @@ export async function GET(request: NextRequest) {
           }
         }
       } catch {
-        // If lookup fails, continue with the variants we already collected
+        // If lookup fails, continue with minimal aliases
+        metrics.artistLookupMs = Date.now() - artistLookupStart;
       }
 
+      // Create state with all aliases
       state = buildContributorCache(artistId, Array.from(aliasCandidates));
       contributorCache.set(artistId, state);
+      metrics.resultCounts.aliases = aliasCandidates.size;
+      aliasesExpanded = true;
     } else {
+      // Ensure current search name is in the state
       for (const alias of aliasCandidates) {
         ensureStateHasAlias(state, alias);
       }
@@ -335,9 +476,14 @@ export async function GET(request: NextRequest) {
       Math.max(offset + limit, 0),
       MAX_CONTRIBUTOR_RECORDINGS,
     );
+
+    const recordingSearchStart = Date.now();
     await ensureMinimumRecordings(state, neededCount);
+    metrics.recordingSearchMs = Date.now() - recordingSearchStart;
 
     if (state.recordings.length === 0) {
+      metrics.totalDuration = Date.now() - startTime;
+      console.log('[Contributor API] No recordings found', { name, metrics });
       return NextResponse.json({
         name,
         totalContributions: 0,
@@ -349,6 +495,7 @@ export async function GET(request: NextRequest) {
     }
 
     const aliasKeys = state.aliasKeys;
+    metrics.resultCounts.totalRecordings = state.recordings.length;
 
     // Step 3: For the requested page, do detailed lookups to get relationship data
     const totalRecordings = state.completed
@@ -356,21 +503,110 @@ export async function GET(request: NextRequest) {
       : Math.max(state.recordings.length, neededCount);
     const pageRecordings = state.recordings.slice(offset, offset + limit);
 
-    // Do detailed lookups in parallel for this page
+    // Do detailed lookups in parallel for this page using cache
+    const lookupStart = Date.now();
     const detailedRecordings = await Promise.all(
       pageRecordings.map(async (rec) => {
         if (!rec.id) return rec;
-        try {
-          // Lookup with artist relationships to get detailed role information
-          const detailed = await lookupRecording(rec.id);
-          return detailed || rec;
-        } catch {
-          return rec; // Fallback to search result if lookup fails
-        }
+        metrics.queryCounts.recordingLookups++;
+        const detailed = await lookupRecordingCached(rec.id);
+        return detailed || rec; // Fallback to search result if lookup fails
       })
     );
+    metrics.recordingLookupsMs = Date.now() - lookupStart;
+
+    // AI-powered filtering and verification (if context provided)
+    // OPTIMIZATION: Skip AI filtering on first page load (offset=0) to improve performance
+    // AI filtering adds 5-10+ seconds, so only do it for subsequent pages or when explicitly requested
+    let aiFilteredRecordings = detailedRecordings;
+    let aiEnrichedWorks: Array<{ title: string; artist: string; confidence: number }> = [];
+    let verification: Awaited<ReturnType<typeof verifyContributor>> = null;
+    const enableAiFiltering = offset > 0; // Only filter for subsequent pages
+
+    if (mbid && fromSong && fromArtist) {
+      try {
+        // Step 3a: Verify contributor identity with AI (quick, ~1-2 seconds)
+        verification = await verifyContributor({
+          name,
+          mbid,
+          originatingSong: {
+            title: fromSong,
+            artist: fromArtist,
+            roles: fromRoles ? fromRoles.split(',') : [],
+          },
+        });
+
+        if (verification && verification.isCorrectPerson && verification.confidence > 0.7) {
+          console.log('[Contributor API] AI verified contributor:', {
+            name,
+            confidence: verification.confidence,
+            knownFor: verification.knownFor?.slice(0, 3),
+          });
+
+          // Step 3b: Filter recordings with AI (slow, 5-10+ seconds)
+          // OPTIMIZATION: Only filter if enabled (offset > 0)
+          if (enableAiFiltering) {
+            const recordingsForFiltering = detailedRecordings.map(r => {
+              const firstCredit = r['artist-credit']?.[0];
+              let artist = 'Unknown';
+              if (typeof firstCredit === 'string') {
+                artist = firstCredit;
+              } else if (firstCredit) {
+                artist = firstCredit.name ?? firstCredit.artist?.name ?? 'Unknown';
+              }
+              return {
+                title: r.title ?? 'Unknown',
+                artist,
+                date: r.releases?.[0]?.date ?? r.date,
+              };
+            });
+
+            const filterResults = await filterRecordings(
+              { name, mbid, verification, originatingSong: { title: fromSong, artist: fromArtist, roles: fromRoles?.split(',') || [] } },
+              recordingsForFiltering
+            );
+
+            // Keep only recordings AI says should be included with reasonable confidence
+            aiFilteredRecordings = detailedRecordings.filter((_, idx) => {
+              const filterResult = filterResults[idx];
+              return filterResult && filterResult.shouldInclude && filterResult.confidence > 0.6;
+            });
+
+            console.log('[Contributor API] AI filtered recordings:', {
+              original: detailedRecordings.length,
+              filtered: aiFilteredRecordings.length,
+            });
+          }
+
+          // Step 3c: If MusicBrainz data is insufficient, enrich with AI-inferred works
+          // Only enrich on first page load when we haven't filtered yet
+          if (!enableAiFiltering && aiFilteredRecordings.length < 3) {
+            aiEnrichedWorks = await enrichWithKnownWorks({
+              name,
+              mbid,
+              verification,
+              originatingSong: {
+                title: fromSong,
+                artist: fromArtist,
+                roles: fromRoles?.split(',') || [],
+              },
+            });
+
+            console.log('[Contributor API] AI enriched with known works:', {
+              enrichedCount: aiEnrichedWorks.length,
+              mbRecordings: aiFilteredRecordings.length,
+            });
+          }
+        }
+      } catch (err) {
+        console.error('[Contributor API] AI filtering failed, using all recordings:', err);
+        // Fall back to all recordings if AI fails
+      }
+    }
 
     // Build contributions list and aggregate roles
+    // Use AI-filtered recordings if available, otherwise use all
+    const recordingsToProcess = aiFilteredRecordings;
     const contributionsMap = new Map<
       string,
       {
@@ -384,7 +620,7 @@ export async function GET(request: NextRequest) {
 
     const roleCountMap = new Map<string, number>();
 
-    for (const recording of detailedRecordings) {
+    for (const recording of recordingsToProcess) {
       const recordingId = recording.id;
       if (!recordingId) continue;
 
@@ -505,6 +741,37 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // Add AI-enriched works if MusicBrainz data is insufficient
+    if (aiEnrichedWorks.length > 0) {
+      for (const work of aiEnrichedWorks) {
+        // Create a synthetic ID for AI-inferred works
+        const syntheticId = `ai-${work.title.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${work.artist.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+
+        if (!contributionsMap.has(syntheticId)) {
+          // Infer roles from original context
+          const inferredRoles = new Set<string>();
+          if (fromRoles) {
+            fromRoles.split(',').forEach(role => inferredRoles.add(role.trim()));
+          } else {
+            inferredRoles.add('producer'); // Default assumption based on Max Martin context
+          }
+
+          contributionsMap.set(syntheticId, {
+            recordingId: syntheticId,
+            title: work.title,
+            artist: work.artist,
+            releaseDate: null, // AI doesn't provide dates
+            roles: inferredRoles,
+          });
+
+          // Update role counts
+          for (const role of inferredRoles) {
+            roleCountMap.set(role, (roleCountMap.get(role) ?? 0) + 1);
+          }
+        }
+      }
+    }
+
     // Convert to arrays and sort
     const contributions = Array.from(contributionsMap.values())
       .map((c) => ({
@@ -530,17 +797,38 @@ export async function GET(request: NextRequest) {
       0,
     );
 
-    const hasMore =
-      !state.completed || offset + limit < state.recordings.length;
+    // If we're showing AI-enriched works, don't offer pagination
+    // (AI gives us a fixed set of ~10-15 known works, not hundreds to paginate through)
+    const hasMore = aiEnrichedWorks.length > 0
+      ? false // No pagination for AI-enriched results
+      : (!state.completed || offset + limit < state.recordings.length);
 
     const profile: ContributorProfile = {
       name,
       totalContributions,
-      totalRecordings,
+      totalRecordings: aiEnrichedWorks.length > 0
+        ? contributionsMap.size // For AI results, show actual count of what we're displaying
+        : totalRecordings, // For MusicBrainz results, show the total available
       hasMore,
       roleBreakdown,
       contributions,
     };
+
+    // Final metrics
+    metrics.totalDuration = Date.now() - startTime;
+
+    // Log performance metrics
+    console.log('[Contributor API] Request completed', {
+      name,
+      mbidProvided: !!mbid,
+      artistId,
+      offset,
+      limit,
+      cacheHit: contributorCache.has(artistId),
+      aliasesExpanded,
+      workQueriesEnabled: ENABLE_WORK_QUERIES,
+      metrics,
+    });
 
     return NextResponse.json(profile);
   } catch (err) {

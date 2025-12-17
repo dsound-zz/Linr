@@ -28,6 +28,8 @@ export interface NormalizedRecording {
     mastering_engineers: string[];
     performers: { role: string; name: string }[];
   };
+  // Store raw MusicBrainz relations to extract artist MBIDs when rendering
+  _rawRelations?: MusicBrainzRelation[];
   external?: {
     source?: string;
     personnel?: { role: string; name: string }[];

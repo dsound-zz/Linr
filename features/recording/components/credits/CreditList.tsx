@@ -5,18 +5,36 @@ import { cn } from "@/lib/utils";
 
 interface CreditListProps {
   items: Item[];
-  recordingId?: string;
+  songContext?: {
+    title: string;
+    artist: string;
+    recordingId?: string;
+  };
+  sectionRole?: string; // e.g., "producer", "writer"
 }
 
-export default function CreditList({ items, recordingId }: CreditListProps) {
+export default function CreditList({ items, songContext, sectionRole }: CreditListProps) {
   const router = useRouter();
 
-  const handleContributorClick = (name: string) => {
-    const params = new URLSearchParams({ name });
-    if (recordingId) {
-      params.set("from", recordingId);
+  const handleContributorClick = (item: Item) => {
+    const params = new URLSearchParams({ name: item.primary });
+    // Pass MBID if available for exact artist matching
+    if (item.mbid) {
+      params.set("mbid", item.mbid);
     }
-    router.push(`/contributor/${encodeURIComponent(name)}?${params.toString()}`);
+    // Pass song context for AI verification
+    if (songContext) {
+      params.set("from_song", songContext.title);
+      params.set("from_artist", songContext.artist);
+      if (sectionRole) {
+        params.set("from_roles", sectionRole);
+      }
+      // Pass recording ID so back button can return to original song
+      if (songContext.recordingId) {
+        params.set("from_recording_id", songContext.recordingId);
+      }
+    }
+    router.push(`/contributor/${encodeURIComponent(item.primary)}?${params.toString()}`);
   };
 
   return (
@@ -31,7 +49,7 @@ export default function CreditList({ items, recordingId }: CreditListProps) {
         >
           <button
             type="button"
-            onClick={() => handleContributorClick(item.primary)}
+            onClick={() => handleContributorClick(item)}
             className={cn(
               "flex-1 px-3 py-2 text-left",
               text.body,

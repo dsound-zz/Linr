@@ -22,17 +22,42 @@ type Section = {
 export type Item = {
   primary: string;
   secondary?: string;
+  mbid?: string; // MusicBrainz artist ID for linking to contributor page
 };
 
-export default function buildCreditsViewModel(raw: unknown): CreditsVM {
+// Helper to extract MBID from raw relations by matching artist name
+function findArtistMbid(name: string, rawRelations?: unknown[]): string | undefined {
+  if (!Array.isArray(rawRelations)) return undefined;
+
+  for (const rel of rawRelations) {
+    if (typeof rel !== 'object' || !rel) continue;
+    const relation = rel as Record<string, any>;
+
+    const artistName = relation.artist?.name;
+    const artistId = relation.artist?.id;
+
+    if (artistName === name && artistId) {
+      return artistId;
+    }
+  }
+
+  return undefined;
+}
+
+export default function buildCreditsViewModel(recording: unknown): CreditsVM {
+  // Extract credits from the recording data
+  const raw = typeof recording === 'object' && recording !== null
+    ? (recording as { credits?: unknown }).credits
+    : null;
+
   const sections = [
-    buildProducers(raw),
-    buildWriters(raw),
-    buildLyricists(raw),
-    buildPerformers(raw),
-    buildEngineers(raw),
-    buildMixingEngineers(raw),
-    buildMasteringEngineers(raw),
+    buildProducers(recording),
+    buildWriters(recording),
+    buildLyricists(recording),
+    buildPerformers(recording),
+    buildEngineers(recording),
+    buildMixingEngineers(recording),
+    buildMasteringEngineers(recording),
   ]
     .filter((s): s is NonNullable<typeof s> => !!s)
     .filter((s) => s.items.length > 0);
@@ -40,12 +65,16 @@ export default function buildCreditsViewModel(raw: unknown): CreditsVM {
   return { sections };
 }
 
-function buildPerformers(raw: unknown): Section | null {
-  if (typeof raw !== "object" || raw === null) return null;
+function buildPerformers(recording: unknown): Section | null {
+  if (typeof recording !== "object" || recording === null) return null;
 
-  const performers = (raw as { performers?: unknown }).performers;
-  const external = (raw as { external?: { personnel?: unknown } }).external;
+  const credits = (recording as { credits?: unknown }).credits;
+  if (typeof credits !== "object" || credits === null) return null;
+
+  const performers = (credits as { performers?: unknown }).performers;
+  const external = (recording as { external?: { personnel?: unknown } }).external;
   const externalPersonnel = external?.personnel;
+  const rawRelations = (recording as { _rawRelations?: unknown })._rawRelations;
 
   const allPerformers: { name: string; role: string }[] = [];
 
@@ -61,17 +90,20 @@ function buildPerformers(raw: unknown): Section | null {
 
   if (allPerformers.length === 0) return null;
 
-  const items = performersToItems(allPerformers);
+  const items = performersToItems(allPerformers, rawRelations as unknown[] | undefined);
 
   return { id: "performers", title: "Performers", items };
 }
 
-function buildWriters(raw: unknown): Section | null {
-  if (typeof raw !== "object" || raw === null) return null;
+function buildWriters(recording: unknown): Section | null {
+  if (typeof recording !== "object" || recording === null) return null;
 
-  const writers = (raw as { writers?: unknown }).writers;
+  const credits = (recording as { credits?: unknown }).credits;
+  if (typeof credits !== "object" || credits === null) return null;
 
-  const composers = (raw as { composers?: unknown }).composers;
+  const writers = (credits as { writers?: unknown }).writers;
+  const composers = (credits as { composers?: unknown }).composers;
+  const rawRelations = (recording as { _rawRelations?: unknown })._rawRelations;
 
   if (!Array.isArray(writers) || !Array.isArray(composers)) return null;
 
@@ -82,66 +114,86 @@ function buildWriters(raw: unknown): Section | null {
       writersSet.add(writer);
     }
   }
-  const items = stringsToItems(Array.from(writersSet));
+  const items = stringsToItems(Array.from(writersSet), rawRelations as unknown[] | undefined);
 
   return { id: "writers", title: "Writers", items };
 }
 
-function buildLyricists(raw: unknown): Section | null {
-  if (typeof raw !== "object" || raw === null) return null;
+function buildLyricists(recording: unknown): Section | null {
+  if (typeof recording !== "object" || recording === null) return null;
 
-  const lyricists = (raw as { lyricists?: unknown }).lyricists;
+  const credits = (recording as { credits?: unknown }).credits;
+  if (typeof credits !== "object" || credits === null) return null;
+
+  const lyricists = (credits as { lyricists?: unknown }).lyricists;
+  const rawRelations = (recording as { _rawRelations?: unknown })._rawRelations;
 
   if (!Array.isArray(lyricists)) return null;
 
-  const items = stringsToItems(lyricists);
+  const items = stringsToItems(lyricists, rawRelations as unknown[] | undefined);
 
   return { id: "lyricists", title: "Lyricists", items };
 }
 
-function buildProducers(raw: unknown): Section | null {
-  if (typeof raw !== "object" || raw === null) return null;
+function buildProducers(recording: unknown): Section | null {
+  if (typeof recording !== "object" || recording === null) return null;
 
-  const producers = (raw as { producers?: unknown }).producers;
+  const credits = (recording as { credits?: unknown }).credits;
+  if (typeof credits !== "object" || credits === null) return null;
+
+  const producers = (credits as { producers?: unknown }).producers;
+  const rawRelations = (recording as { _rawRelations?: unknown })._rawRelations;
   if (!Array.isArray(producers)) return null;
 
-  const items = stringsToItems(producers);
+  const items = stringsToItems(producers, rawRelations as unknown[] | undefined);
 
   return { id: "producers", title: "Producers", items };
 }
 
-function buildEngineers(raw: unknown): Section | null {
-  if (typeof raw !== "object" || raw === null) return null;
+function buildEngineers(recording: unknown): Section | null {
+  if (typeof recording !== "object" || recording === null) return null;
 
-  const engineers = (raw as { recording_engineers?: unknown })
+  const credits = (recording as { credits?: unknown }).credits;
+  if (typeof credits !== "object" || credits === null) return null;
+
+  const engineers = (credits as { recording_engineers?: unknown })
     .recording_engineers;
+  const rawRelations = (recording as { _rawRelations?: unknown })._rawRelations;
   if (!Array.isArray(engineers)) return null;
 
-  const items = stringsToItems(engineers);
+  const items = stringsToItems(engineers, rawRelations as unknown[] | undefined);
 
   return { id: "engineers", title: "Engineers", items };
 }
 
-function buildMixingEngineers(raw: unknown): Section | null {
-  if (typeof raw !== "object" || raw === null) return null;
+function buildMixingEngineers(recording: unknown): Section | null {
+  if (typeof recording !== "object" || recording === null) return null;
 
-  const mixingEngineers = (raw as { mixing_engineers?: unknown })
+  const credits = (recording as { credits?: unknown }).credits;
+  if (typeof credits !== "object" || credits === null) return null;
+
+  const mixingEngineers = (credits as { mixing_engineers?: unknown })
     .mixing_engineers;
+  const rawRelations = (recording as { _rawRelations?: unknown })._rawRelations;
   if (!Array.isArray(mixingEngineers)) return null;
 
-  const items = stringsToItems(mixingEngineers);
+  const items = stringsToItems(mixingEngineers, rawRelations as unknown[] | undefined);
 
   return { id: "mixingEngineers", title: "Mixing Engineers", items };
 }
 
-function buildMasteringEngineers(raw: unknown): Section | null {
-  if (typeof raw !== "object" || raw === null) return null;
+function buildMasteringEngineers(recording: unknown): Section | null {
+  if (typeof recording !== "object" || recording === null) return null;
 
-  const masteringEngineers = (raw as { mastering_engineers?: unknown })
+  const credits = (recording as { credits?: unknown }).credits;
+  if (typeof credits !== "object" || credits === null) return null;
+
+  const masteringEngineers = (credits as { mastering_engineers?: unknown })
     .mastering_engineers;
+  const rawRelations = (recording as { _rawRelations?: unknown })._rawRelations;
   if (!Array.isArray(masteringEngineers)) return null;
 
-  const items = stringsToItems(masteringEngineers);
+  const items = stringsToItems(masteringEngineers, rawRelations as unknown[] | undefined);
 
   return { id: "masteringEngineers", title: "Mastering Engineers", items };
 }
@@ -152,14 +204,17 @@ function decodeHtmlEntities(text: string): string {
   return textarea.value;
 }
 
-function stringsToItems(names: string[]): Item[] {
+function stringsToItems(names: string[], rawRelations?: unknown[]): Item[] {
   return names
     .map((name) => decodeHtmlEntities(name.trim()))
     .filter(Boolean)
-    .map((name) => ({ primary: name }));
+    .map((name) => ({
+      primary: name,
+      mbid: findArtistMbid(name, rawRelations),
+    }));
 }
 
-function performersToItems(p: { name: string; role: string }[]): Item[] {
+function performersToItems(p: { name: string; role: string }[], rawRelations?: unknown[]): Item[] {
   return p
     .filter((x) => {
       // Filter out descriptive phrases that aren't actual performer names
@@ -183,14 +238,23 @@ function performersToItems(p: { name: string; role: string }[]): Item[] {
       let name = x.name;
       let role = x.role ?? "";
 
-      // Check if the name contains a colon separator (e.g., "Michael Jackson : lead vocals")
-      // This can happen when Wikipedia data isn't properly parsed
+      // Check if the name contains a colon separator
+      // Format can be either:
+      // - "Guitar: Esbjörn Öhrwall" (instrument: person) from external data
+      // - "Michael Jackson: lead vocals" (person: role) from some sources
       const colonMatch = name.match(/^([^:]+):(.+)$/);
       if (colonMatch) {
-        name = colonMatch[1].trim();
-        // If role is empty or generic, use the part after the colon
+        const beforeColon = colonMatch[1].trim();
+        const afterColon = colonMatch[2].trim();
+
+        // If role is empty or generic "personnel", assume format is "Instrument: Person"
         if (!role || role.toLowerCase() === "personnel") {
-          role = colonMatch[2].trim();
+          role = beforeColon;  // Instrument becomes the role
+          name = afterColon;   // Person becomes the name
+        } else {
+          // Otherwise assume format is "Person: Role"
+          name = beforeColon;
+          role = afterColon;
         }
       }
 
@@ -200,7 +264,10 @@ function performersToItems(p: { name: string; role: string }[]): Item[] {
       // - If the role is "background (vocalist)", keep "background" (outer is non-generic).
       const raw = role.trim();
       if (!raw || raw.toLowerCase() === "personnel") {
-        return { primary: decodeHtmlEntities(name) };
+        return {
+          primary: decodeHtmlEntities(name),
+          mbid: findArtistMbid(name, rawRelations),
+        };
       }
 
       const parenMatch = raw.match(/^\s*(.*?)\s*\(\s*(.*?)\s*\)\s*$/);
@@ -223,6 +290,7 @@ function performersToItems(p: { name: string; role: string }[]): Item[] {
       return {
         primary: decodeHtmlEntities(name),
         secondary: cleanedRole.length > 0 ? decodeHtmlEntities(cleanedRole) : undefined,
+        mbid: findArtistMbid(name, rawRelations),
       };
     });
 }

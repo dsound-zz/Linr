@@ -14,22 +14,36 @@ export default function CreditsView({
   loading,
   enhancing,
   error,
+  fromContributor,
+  recordingId,
 }: {
   data: NormalizedRecording | null;
   loading: boolean;
   enhancing?: boolean;
   error: string | null;
+  fromContributor?: string;
+  recordingId?: string;
 }) {
-  const vm = buildCreditsViewModel(data?.credits);
+  // Pass the full data object so viewModel can access _rawRelations for MBID extraction
+  const vm = buildCreditsViewModel(data);
+
+  // Determine back link based on where user came from
+  const backHref = fromContributor
+    ? `/contributor/${encodeURIComponent(fromContributor)}`
+    : "/";
+  const backText = fromContributor
+    ? `Back to ${fromContributor}`
+    : "Back";
+
   return (
     <>
       <div className="flex items-center justify-between">
-        <Link href="/">
+        <Link href={backHref}>
           <Button
             variant="outline"
             className="border-2 border-primary text-primary bg-background/75 shadow-sm"
           >
-            Back
+            {backText}
           </Button>
         </Link>
       </div>
@@ -92,7 +106,16 @@ export default function CreditsView({
                 <CreditsSection key={section.id} title={section.title}>
                   <CreditList
                     items={section.items}
-                    recordingId={data.identifiers?.mbid}
+                    songContext={
+                      data
+                        ? {
+                            title: data.title || "Unknown",
+                            artist: data.artist || "Unknown",
+                            recordingId,
+                          }
+                        : undefined
+                    }
+                    sectionRole={section.id}
                   />
                 </CreditsSection>
               ))}

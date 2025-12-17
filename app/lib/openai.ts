@@ -391,6 +391,7 @@ export function deriveRecordingFromMB(
     },
     locations,
     credits,
+    _rawRelations: rels, // Store raw relations for MBID extraction
   };
 }
 
@@ -521,6 +522,7 @@ function mergeNormalized(
         ai.credits?.performers,
       ),
     },
+    _rawRelations: base._rawRelations, // Preserve raw relations for MBID extraction
   };
 }
 

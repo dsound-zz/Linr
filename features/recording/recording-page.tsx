@@ -5,9 +5,12 @@ import type { NormalizedRecording } from "@/lib/types";
 import { AppLayout } from "@components/layout/app-layout";
 import CreditsView from "./components/CreditsView";
 
+const isAbortError = (err: unknown): err is DOMException =>
+  err instanceof DOMException && err.name === "AbortError";
+
 export function RecordingPage() {
   const router = useRouter();
-  const { id, source } = router.query;
+  const { id, source, from_contributor, from_recording_id } = router.query;
 
   const [data, setData] = React.useState<NormalizedRecording | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -76,12 +79,18 @@ export function RecordingPage() {
             if (requestSeq.current !== seq) return;
             setData(j2 as NormalizedRecording);
           })
+          .catch((err) => {
+            if (isAbortError(err)) return;
+            if (requestSeq.current !== seq) return;
+            console.error(err);
+          })
           .finally(() => {
             if (requestSeq.current !== seq) return;
             setEnhancing(false);
           });
       })
       .catch((err) => {
+        if (isAbortError(err)) return;
         if (requestSeq.current !== seq) return;
         setError(
           err instanceof Error ? err.message : "Failed to load recording",
@@ -98,6 +107,13 @@ export function RecordingPage() {
     };
   }, [router.isReady, id, source]);
 
+  // Determine which recording ID to pass for the back button:
+  // - If we came from another recording (from_recording_id exists), use that (preserve the original)
+  // - Otherwise, use the current recording's ID (this is the starting point)
+  const recordingIdForBackButton = typeof from_recording_id === "string" && from_recording_id
+    ? from_recording_id
+    : typeof id === "string" ? id : undefined;
+
   return (
     <AppLayout>
       <div className="space-y-6">
@@ -106,6 +122,8 @@ export function RecordingPage() {
           loading={loading}
           enhancing={enhancing}
           error={error}
+          fromContributor={typeof from_contributor === "string" ? from_contributor : undefined}
+          recordingId={recordingIdForBackButton}
         />
       </div>
     </AppLayout>

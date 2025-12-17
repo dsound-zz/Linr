@@ -11,7 +11,7 @@ import { surface, text } from "@styles/typeography";
 
 export function ContributorPage() {
   const router = useRouter();
-  const { name, from } = router.query;
+  const { name, mbid, from_song, from_artist, from_roles, from_recording_id } = router.query;
 
   const [data, setData] = React.useState<ContributorProfile | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -32,6 +32,20 @@ export function ContributorPage() {
     const abortController = new AbortController();
 
     const params = new URLSearchParams({ name, limit: LIMIT.toString(), offset: "0" });
+    // Pass MBID if available for exact artist matching
+    if (typeof mbid === "string" && mbid) {
+      params.set("mbid", mbid);
+    }
+    // Pass song context for AI verification
+    if (typeof from_song === "string" && from_song) {
+      params.set("from_song", from_song);
+    }
+    if (typeof from_artist === "string" && from_artist) {
+      params.set("from_artist", from_artist);
+    }
+    if (typeof from_roles === "string" && from_roles) {
+      params.set("from_roles", from_roles);
+    }
     fetch(`/api/contributor?${params.toString()}`, {
       signal: abortController.signal,
     })
@@ -54,7 +68,7 @@ export function ContributorPage() {
     return () => {
       abortController.abort();
     };
-  }, [router.isReady, name]);
+  }, [router.isReady, name, mbid, from_song, from_artist, from_roles]);
 
   const handleLoadMore = async () => {
     if (!data || loadingMore || !data.hasMore || typeof name !== "string") return;
@@ -68,6 +82,20 @@ export function ContributorPage() {
         limit: LIMIT.toString(),
         offset: newOffset.toString(),
       });
+      // Pass MBID if available for exact artist matching
+      if (typeof mbid === "string" && mbid) {
+        params.set("mbid", mbid);
+      }
+      // Pass song context for AI verification
+      if (typeof from_song === "string" && from_song) {
+        params.set("from_song", from_song);
+      }
+      if (typeof from_artist === "string" && from_artist) {
+        params.set("from_artist", from_artist);
+      }
+      if (typeof from_roles === "string" && from_roles) {
+        params.set("from_roles", from_roles);
+      }
 
       const res = await fetch(`/api/contributor?${params.toString()}`);
       const json = (await res.json()) as unknown;
@@ -92,15 +120,34 @@ export function ContributorPage() {
   };
 
   const handleBack = () => {
-    if (typeof from === "string" && from) {
-      router.push(`/recording/${from}`);
-    } else {
-      router.back();
-    }
+    // Always use browser back - matches browser back button behavior exactly
+    router.back();
   };
 
-  const handleRecordingClick = (id: string) => {
-    router.push(`/recording/${id}`);
+  const handleRecordingClick = (recordingId: string, title: string, artist: string) => {
+    // If this is an AI-inferred recording (not a real MusicBrainz ID), search for it instead
+    if (recordingId.startsWith('ai-')) {
+      // Search for the song by title and artist, with auto-navigation enabled
+      const searchQuery = `${title} ${artist}`;
+      router.push(`/?q=${encodeURIComponent(searchQuery)}&auto=1`);
+      return;
+    }
+
+    // For real MusicBrainz recordings, navigate to the recording page
+    // Pass the original recording ID forward so nested navigation can return to it
+    const originalRecordingId = typeof from_recording_id === "string" && from_recording_id
+      ? from_recording_id
+      : null;
+
+    const params = new URLSearchParams();
+    if (originalRecordingId) {
+      params.set("from_recording_id", originalRecordingId);
+    }
+
+    const url = params.toString()
+      ? `/recording/${recordingId}?${params.toString()}`
+      : `/recording/${recordingId}`;
+    router.push(url);
   };
 
   if (loading) {
@@ -160,6 +207,23 @@ export function ContributorPage() {
               {data.totalRecordings} recording
               {data.totalRecordings !== 1 ? "s" : ""}
             </div>
+            {/* Legend for data sources */}
+            {data.contributions.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
+                <div className="flex items-center gap-1.5">
+                  <span className={cn(surface.badge, "bg-yellow-500/20 text-yellow-700 dark:text-yellow-300")}>
+                    role
+                  </span>
+                  <span className="text-muted-foreground">MusicBrainz</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className={cn(surface.badge, "bg-purple-500/20 text-purple-700 dark:text-purple-300")}>
+                    role
+                  </span>
+                  <span className="text-muted-foreground">AI-inferred</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -168,17 +232,26 @@ export function ContributorPage() {
           <div className={cn(surface.cardPadded, "space-y-4")}>
             <h2 className={text.sectionTitle}>Role Breakdown</h2>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
-              {data.roleBreakdown.map((role) => (
-                <div
-                  key={role.role}
-                  className={cn(
-                    "rounded-lg border border-border bg-secondary/30 p-3",
-                  )}
-                >
-                  <div className="text-2xl font-bold">{role.count}</div>
-                  <div className={cn(text.meta, "capitalize")}>{role.role}</div>
-                </div>
-              ))}
+              {data.roleBreakdown.map((role) => {
+                // Always use singular form for role names (we're describing this person's role)
+                let displayRole = role.role;
+                if (displayRole.endsWith('s')) {
+                  // Simple singularization: remove trailing 's'
+                  displayRole = displayRole.slice(0, -1);
+                }
+
+                return (
+                  <div
+                    key={role.role}
+                    className={cn(
+                      "rounded-lg border border-border bg-secondary/30 p-3",
+                    )}
+                  >
+                    <div className="text-2xl font-bold">{role.count}</div>
+                    <div className={cn(text.meta, "capitalize")}>{displayRole}</div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -191,7 +264,7 @@ export function ContributorPage() {
               <button
                 key={contrib.recordingId}
                 type="button"
-                onClick={() => handleRecordingClick(contrib.recordingId)}
+                onClick={() => handleRecordingClick(contrib.recordingId, contrib.title, contrib.artist)}
                 className={cn(
                   "w-full rounded-xl border border-border bg-card p-4 text-left transition-colors",
                   "hover:bg-secondary/60",
@@ -211,11 +284,22 @@ export function ContributorPage() {
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    {contrib.roles.map((role, idx) => (
-                      <span key={idx} className={surface.badge}>
-                        {role}
-                      </span>
-                    ))}
+                    {contrib.roles.map((role, idx) => {
+                      const isAiInferred = contrib.recordingId.startsWith('ai-');
+                      return (
+                        <span
+                          key={idx}
+                          className={cn(
+                            surface.badge,
+                            isAiInferred
+                              ? "bg-purple-500/20 text-purple-700 dark:text-purple-300"
+                              : "bg-yellow-500/20 text-yellow-700 dark:text-yellow-300"
+                          )}
+                        >
+                          {role}
+                        </span>
+                      );
+                    })}
                   </div>
                 </div>
               </button>

@@ -69,7 +69,7 @@ export async function GET(req: Request) {
     // Cache the full normalized payload (best-effort). This dramatically speeds up
     // repeat navigations and back/forward.
     // Bump to invalidate normalized payload caches when enrichment logic changes.
-    const RECORDING_CACHE_VERSION = 5;
+    const RECORDING_CACHE_VERSION = 6; // Bumped to include _rawRelations for MBID extraction
     const fullCacheKey = cacheKeyRecording(
       `recording:v${RECORDING_CACHE_VERSION}:${id}:ai:${allowAI}:external:${allowExternal}:inferred:${allowInferred}`,
     );

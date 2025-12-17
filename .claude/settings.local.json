@@ -13,7 +13,16 @@
       "Bash(lsof:*)",
       "Bash(kill:*)",
       "Bash(git push:*)",
-      "Bash(xargs -I {} curl -s \"http://localhost:3000/api/recording?id={}\")"
+      "Bash(xargs -I {} curl -s \"http://localhost:3000/api/recording?id={}\")",
+      "Bash(xargs kill -9)",
+      "Bash(git checkout:*)",
+      "Bash(node test-max-martin.js:*)",
+      "Bash(node test-find-producer-max-martin.js:*)",
+      "Bash(node test-inspect-relations.js:*)",
+      "Bash(node test-full-flow.js:*)",
+      "Bash(timeout 30 curl:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(npm run build:*)"
     ]
   }
 }

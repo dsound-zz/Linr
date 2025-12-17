@@ -20,8 +20,24 @@ export function SearchPage() {
   const inputRef = React.useRef<HTMLInputElement>(null);
   const abortControllerRef = React.useRef<AbortController | null>(null);
 
-  async function handleSearch(e?: React.FormEvent) {
+  // Auto-search when URL has a query parameter
+  React.useEffect(() => {
+    if (!router.isReady) return;
+
+    const urlQuery = router.query.q;
+    const autoNavigate = router.query.auto === '1';
+
+    if (typeof urlQuery === 'string' && urlQuery.trim()) {
+      setQuery(urlQuery);
+      handleSearch(undefined, urlQuery, autoNavigate);
+    }
+  }, [router.isReady, router.query.q, router.query.auto]);
+
+  async function handleSearch(e?: React.FormEvent, searchQuery?: string, autoNavigate?: boolean) {
     if (e) e.preventDefault();
+
+    const queryToSearch = searchQuery ?? query;
+    if (!queryToSearch.trim()) return;
 
     // Abort any in-progress search
     if (abortControllerRef.current) {
@@ -35,7 +51,7 @@ export function SearchPage() {
 
     try {
       const params = new URLSearchParams({
-        q: query,
+        q: queryToSearch,
       });
 
       const res = await fetch(`/api/search?${params.toString()}`, {
@@ -48,7 +64,14 @@ export function SearchPage() {
 
       if (data.error) throw new Error(data.error);
 
-      setResults(Array.isArray(data.results) ? data.results : []);
+      const searchResults = Array.isArray(data.results) ? data.results : [];
+      setResults(searchResults);
+
+      // If autoNavigate is enabled and we have exactly one result, navigate to it
+      if (autoNavigate && searchResults.length === 1) {
+        const firstResult = searchResults[0];
+        await handleSelect(firstResult);
+      }
     } catch (err) {
       // Don't show error if the request was aborted
       if (err instanceof Error && err.name === "AbortError") {
