@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { performance } from "node:perf_hooks";
 import type { ContributorProfile } from "@/lib/types";
 import { getMBClient, lookupRecording, lookupArtist } from "@/lib/musicbrainz";
 import type { MusicBrainzRecording } from "@/lib/types";
@@ -7,6 +8,7 @@ import { verifyContributor, filterRecordings, enrichWithKnownWorks } from "@/lib
 const MAX_CONTRIBUTOR_RECORDINGS = 400;
 const CONTRIBUTOR_PAGE_SIZE = 100;
 const WORK_PAGE_SIZE = 50;
+const MAX_FIRST_PAGE_LOOKUPS = 4;
 
 // Optional: Enable work-based queries (can be disabled for performance)
 const ENABLE_WORK_QUERIES = process.env.ENABLE_WORK_QUERIES !== 'false';
@@ -70,6 +72,21 @@ interface CachedRecording {
 const recordingCache = new Map<string, CachedRecording>();
 
 // Timeout wrapper to prevent hanging on slow MusicBrainz requests
+function logStep(
+  step: string,
+  startTime: number,
+  details: Record<string, unknown>,
+) {
+  const durationMs = performance.now() - startTime;
+  const payload = {
+    step,
+    durationMs: Number(durationMs.toFixed(2)),
+    ...details,
+  };
+  console.log("[Contributor API][perf]", payload);
+  return durationMs;
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   const timeout = new Promise<null>((resolve) =>
     setTimeout(() => resolve(null), timeoutMs)
@@ -78,14 +95,28 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 }
 
 async function lookupRecordingCached(id: string): Promise<MusicBrainzRecording | null> {
+  const cacheReadStart = performance.now();
   const cached = recordingCache.get(id);
   if (cached && Date.now() - cached.timestamp < RECORDING_CACHE_TTL_MS) {
+    logStep("recording-cache-read", cacheReadStart, {
+      recordingId: id,
+      hit: true,
+    });
     return cached.recording;
   }
+  logStep("recording-cache-read", cacheReadStart, {
+    recordingId: id,
+    hit: false,
+  });
 
   try {
     // Add 10 second timeout to prevent hanging on slow requests
+    const lookupStart = performance.now();
     const recording = await withTimeout(lookupRecording(id), 10000);
+    logStep("lookupRecording", lookupStart, {
+      recordingId: id,
+      succeeded: Boolean(recording),
+    });
     if (recording) {
       // Simple LRU: if cache is full, remove oldest entries
       if (recordingCache.size >= RECORDING_CACHE_MAX_SIZE) {
@@ -93,6 +124,10 @@ async function lookupRecordingCached(id: string): Promise<MusicBrainzRecording |
         if (oldestKey) recordingCache.delete(oldestKey);
       }
       recordingCache.set(id, { recording, timestamp: Date.now() });
+      logStep("recording-cache-write", performance.now(), {
+        recordingId: id,
+        cacheSize: recordingCache.size,
+      });
     }
     return recording;
   } catch {
@@ -328,6 +363,8 @@ export async function GET(request: NextRequest) {
   const fromSong = searchParams.get("from_song"); // Originating song title for context
   const fromArtist = searchParams.get("from_artist"); // Originating song artist for context
   const fromRoles = searchParams.get("from_roles"); // Roles in originating song (comma-separated)
+  const debug =
+    searchParams.get("debug") === "1" || searchParams.get("debug") === "true";
 
   const limit = limitParam ? Math.min(parseInt(limitParam, 10), 50) : 20;
   const offset = offsetParam ? parseInt(offsetParam, 10) : 0;
@@ -373,24 +410,35 @@ export async function GET(request: NextRequest) {
       artistId = mbid.trim();
 
       // Fetch artist details for name and aliases
-      const artistLookupStart = Date.now();
+      const artistLookupStart = performance.now();
       try {
         topArtist = await lookupArtist(artistId);
-        metrics.artistLookupMs = Date.now() - artistLookupStart;
+        const duration = logStep("artist-lookup", artistLookupStart, {
+          source: "direct-mbid",
+          success: true,
+        });
+        metrics.artistLookupMs = duration;
         metrics.queryCounts.artistLookup = 1;
       } catch {
         // If lookup fails, continue with just the MBID
-        metrics.artistLookupMs = Date.now() - artistLookupStart;
+        const duration = logStep("artist-lookup", artistLookupStart, {
+          source: "direct-mbid",
+          success: false,
+        });
+        metrics.artistLookupMs = duration;
         topArtist = { id: artistId, name: name };
       }
     } else {
       // Fall back to search by name if no MBID provided
-      const artistSearchStart = Date.now();
+      const artistSearchStart = performance.now();
       const artistSearchResult = await mb.search("artist", {
         query: `artist:"${name.trim()}"`,
         limit: 5,
       });
-      metrics.artistSearchMs = Date.now() - artistSearchStart;
+      const searchDuration = logStep("artist-search", artistSearchStart, {
+        results: artistSearchResult.artists?.length ?? 0,
+      });
+      metrics.artistSearchMs = searchDuration;
       metrics.queryCounts.artistSearch = 1;
 
       const artists = artistSearchResult.artists ?? [];
@@ -420,6 +468,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    const aliasExpansionStart = performance.now();
     const aliasCandidates = new Set<string>();
     const addAliasCandidate = (value?: string) => {
       if (typeof value !== "string") return;
@@ -434,16 +483,27 @@ export async function GET(request: NextRequest) {
       addAliasCandidate(topArtist.name);
     }
 
+    const cacheReadStart = performance.now();
     let state = contributorCache.get(artistId);
+    logStep("cache-read", cacheReadStart, {
+      cache: "contributor",
+      artistId,
+      hit: Boolean(state),
+      aliasCount: state?.aliasNames.size ?? 0,
+    });
     let aliasesExpanded = false;
 
     if (!state) {
       // For new contributors, always fetch full aliases to ensure completeness
       // This is especially important for prolific contributors like Max Martin
-      const artistLookupStart = Date.now();
+      const artistLookupStart = performance.now();
       try {
         const fullArtist = await lookupArtist(artistId);
-        metrics.artistLookupMs = Date.now() - artistLookupStart;
+        const duration = logStep("artist-lookup", artistLookupStart, {
+          source: "alias-expansion",
+          success: true,
+        });
+        metrics.artistLookupMs = duration;
         metrics.queryCounts.artistLookup = 1;
 
         if (fullArtist.name) {
@@ -457,12 +517,21 @@ export async function GET(request: NextRequest) {
         }
       } catch {
         // If lookup fails, continue with minimal aliases
-        metrics.artistLookupMs = Date.now() - artistLookupStart;
+        const duration = logStep("artist-lookup", artistLookupStart, {
+          source: "alias-expansion",
+          success: false,
+        });
+        metrics.artistLookupMs = duration;
       }
 
       // Create state with all aliases
       state = buildContributorCache(artistId, Array.from(aliasCandidates));
       contributorCache.set(artistId, state);
+      logStep("cache-write", performance.now(), {
+        cache: "contributor",
+        artistId,
+        aliasCount: state.aliasNames.size,
+      });
       metrics.resultCounts.aliases = aliasCandidates.size;
       aliasesExpanded = true;
     } else {
@@ -471,15 +540,24 @@ export async function GET(request: NextRequest) {
         ensureStateHasAlias(state, alias);
       }
     }
+    logStep("alias-expansion", aliasExpansionStart, {
+      aliasCandidates: aliasCandidates.size,
+      stateAliases: state.aliasNames.size,
+    });
 
     const neededCount = Math.min(
       Math.max(offset + limit, 0),
       MAX_CONTRIBUTOR_RECORDINGS,
     );
 
-    const recordingSearchStart = Date.now();
+    const recordingSearchStart = performance.now();
     await ensureMinimumRecordings(state, neededCount);
-    metrics.recordingSearchMs = Date.now() - recordingSearchStart;
+    const discoveryDuration = logStep("recording-discovery", recordingSearchStart, {
+      neededCount,
+      totalFetched: state.recordings.length,
+      completed: state.completed,
+    });
+    metrics.recordingSearchMs = discoveryDuration;
 
     if (state.recordings.length === 0) {
       metrics.totalDuration = Date.now() - startTime;
@@ -501,19 +579,46 @@ export async function GET(request: NextRequest) {
     const totalRecordings = state.completed
       ? state.recordings.length
       : Math.max(state.recordings.length, neededCount);
+    const paginationStart = performance.now();
     const pageRecordings = state.recordings.slice(offset, offset + limit);
+    logStep("pagination", paginationStart, {
+      offset,
+      limit,
+      pageCount: pageRecordings.length,
+      totalRecordings,
+    });
 
     // Do detailed lookups in parallel for this page using cache
-    const lookupStart = Date.now();
+    const lookupStart = performance.now();
+    /**
+     * PERF NOTE (2025-02-14):
+     * Instrumentation for "larry carlton" showed the recording-lookups step dominating (~10s)
+     * because firing 20 lookupRecording requests in parallel trips the MusicBrainz 1 req/sec limit.
+     * The slowdowns were sequential (every extra request waited ~10s before timing out), repeated for
+     * every offset=0 request, and unrelated to AI (not triggered). ensureMinimumRecordings stayed bounded.
+     * To keep the first page < 8s we cap detailed lookups to a smaller batch on the first page and fall
+     * back to lightweight search payloads for the remainder.
+     */
     const detailedRecordings = await Promise.all(
-      pageRecordings.map(async (rec) => {
+      pageRecordings.map(async (rec, idx) => {
         if (!rec.id) return rec;
+        const shouldLookup =
+          offset > 0 || idx < Math.min(MAX_FIRST_PAGE_LOOKUPS, pageRecordings.length);
+        if (!shouldLookup) {
+          return rec;
+        }
         metrics.queryCounts.recordingLookups++;
         const detailed = await lookupRecordingCached(rec.id);
         return detailed || rec; // Fallback to search result if lookup fails
       })
     );
-    metrics.recordingLookupsMs = Date.now() - lookupStart;
+    const lookupDuration = logStep("recording-lookups", lookupStart, {
+      count:
+        offset > 0
+          ? pageRecordings.length
+          : Math.min(MAX_FIRST_PAGE_LOOKUPS, pageRecordings.length),
+    });
+    metrics.recordingLookupsMs = lookupDuration;
 
     // AI-powered filtering and verification (if context provided)
     // OPTIMIZATION: Skip AI filtering on first page load (offset=0) to improve performance
@@ -526,6 +631,7 @@ export async function GET(request: NextRequest) {
     if (mbid && fromSong && fromArtist) {
       try {
         // Step 3a: Verify contributor identity with AI (quick, ~1-2 seconds)
+        const aiVerifyStart = performance.now();
         verification = await verifyContributor({
           name,
           mbid,
@@ -534,6 +640,9 @@ export async function GET(request: NextRequest) {
             artist: fromArtist,
             roles: fromRoles ? fromRoles.split(',') : [],
           },
+        });
+        logStep("ai-verification", aiVerifyStart, {
+          triggered: true,
         });
 
         if (verification && verification.isCorrectPerson && verification.confidence > 0.7) {
@@ -546,6 +655,7 @@ export async function GET(request: NextRequest) {
           // Step 3b: Filter recordings with AI (slow, 5-10+ seconds)
           // OPTIMIZATION: Only filter if enabled (offset > 0)
           if (enableAiFiltering) {
+            const aiFilterStart = performance.now();
             const recordingsForFiltering = detailedRecordings.map(r => {
               const firstCredit = r['artist-credit']?.[0];
               let artist = 'Unknown';
@@ -572,6 +682,11 @@ export async function GET(request: NextRequest) {
               return filterResult && filterResult.shouldInclude && filterResult.confidence > 0.6;
             });
 
+            logStep("ai-filtering", aiFilterStart, {
+              enabled: true,
+              originalCount: detailedRecordings.length,
+              filteredCount: aiFilteredRecordings.length,
+            });
             console.log('[Contributor API] AI filtered recordings:', {
               original: detailedRecordings.length,
               filtered: aiFilteredRecordings.length,
@@ -581,6 +696,7 @@ export async function GET(request: NextRequest) {
           // Step 3c: If MusicBrainz data is insufficient, enrich with AI-inferred works
           // Only enrich on first page load when we haven't filtered yet
           if (!enableAiFiltering && aiFilteredRecordings.length < 3) {
+            const aiEnrichStart = performance.now();
             aiEnrichedWorks = await enrichWithKnownWorks({
               name,
               mbid,
@@ -590,6 +706,9 @@ export async function GET(request: NextRequest) {
                 artist: fromArtist,
                 roles: fromRoles?.split(',') || [],
               },
+            });
+            logStep("ai-enrichment", aiEnrichStart, {
+              enrichedCount: aiEnrichedWorks.length,
             });
 
             console.log('[Contributor API] AI enriched with known works:', {
@@ -830,7 +949,8 @@ export async function GET(request: NextRequest) {
       metrics,
     });
 
-    return NextResponse.json(profile);
+    // Always include perf metrics so callers can debug timeouts without query flags
+    return NextResponse.json({ ...profile, metrics });
   } catch (err) {
     console.error("Contributor API error:", err);
     return NextResponse.json(

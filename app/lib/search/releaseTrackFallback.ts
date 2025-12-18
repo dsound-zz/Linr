@@ -697,10 +697,18 @@ export async function discoverAlbumTracks(params: {
   for (const artist of candidateArtists.slice(0, MAX_ARTISTS)) {
     try {
       const recordingQuery = `recording:"${titleCase}" AND artist:"${artist}"`;
-      const result = await mb.search("recording", {
+
+      // Add timeout to prevent hanging on slow searches
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Recording search timeout')), 3000)
+      );
+
+      const searchPromise = mb.search("recording", {
         query: recordingQuery,
         limit: MAX_RECORDINGS_PER_ARTIST,
       });
+
+      const result = await Promise.race([searchPromise, timeoutPromise]);
 
       const normalizedArtist = normalize(artist);
       const recordings = (result.recordings ?? []).filter((r) => {
@@ -807,11 +815,19 @@ export async function discoverAlbumTracks(params: {
     for (const artist of candidateArtists.slice(0, FALLBACK_MAX_ARTISTS)) {
       try {
         const releaseQuery = `artist:"${artist}" AND (primarytype:Album OR primarytype:Single)`;
-        const releaseResult = await mb.search("release", {
+
+        // Add timeout to prevent hanging on slow searches
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Release search timeout')), 3000)
+        );
+
+        const searchPromise = mb.search("release", {
           query: releaseQuery,
           limit: 25,
           offset: 0,
         });
+
+        const releaseResult = await Promise.race([searchPromise, timeoutPromise]);
 
         const releases = releaseResult.releases ?? [];
         for (const release of releases.slice(

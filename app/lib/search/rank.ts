@@ -205,7 +205,7 @@ export function scoreRecording(
     score += 20; // Title track from album = canonical
   }
 
-  // Earliest release year (older songs get slight boost for cultural recognition)
+  // Earliest release year (older songs get stronger boost for cultural recognition)
   const years = scoringReleases
     .map((r) => (r.year ? parseInt(r.year) : null))
     .filter((y): y is number => y !== null && !isNaN(y));
@@ -213,7 +213,9 @@ export function scoreRecording(
   if (years.length > 0) {
     const earliestYear = Math.min(...years);
     const ageBias = Math.max(0, new Date().getFullYear() - earliestYear);
-    score += Math.min(10, ageBias / 5); // Up to +10 for very old songs
+    // Stronger age bias: prioritize classic recordings over recent re-releases/compilations
+    // 1970s-1980s recordings get significant boost over 2000s+ recordings
+    score += Math.min(30, ageBias / 2); // Up to +30 for very old songs (vs +10 before)
   }
 
   // Bonus for canonical 80s US hits (single-word exact matches, studio album, 1980-1990, US release)

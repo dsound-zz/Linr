@@ -9,6 +9,32 @@ import { RecordSpinner } from "@components/record-spinner";
 import { Button } from "@components/ui/button";
 import { surface, text } from "@styles/typeography";
 
+// Client-side cache for contributor data (survives navigation)
+const contributorCache = new Map<string, {
+  data: ContributorProfile;
+  timestamp: number;
+}>();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function getCacheKey(name: string, mbid?: string, fromSong?: string, fromArtist?: string, fromRoles?: string): string {
+  return `${name}|${mbid || ''}|${fromSong || ''}|${fromArtist || ''}|${fromRoles || ''}`;
+}
+
+function getCachedData(key: string): ContributorProfile | null {
+  const cached = contributorCache.get(key);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.data;
+  }
+  if (cached) {
+    contributorCache.delete(key);
+  }
+  return null;
+}
+
+function setCachedData(key: string, data: ContributorProfile): void {
+  contributorCache.set(key, { data, timestamp: Date.now() });
+}
+
 export function ContributorPage() {
   const router = useRouter();
   const { name, mbid, from_song, from_artist, from_roles, from_recording_id } = router.query;
@@ -23,6 +49,23 @@ export function ContributorPage() {
   React.useEffect(() => {
     if (!router.isReady) return undefined;
     if (typeof name !== "string") return undefined;
+
+    const cacheKey = getCacheKey(
+      name,
+      typeof mbid === "string" ? mbid : undefined,
+      typeof from_song === "string" ? from_song : undefined,
+      typeof from_artist === "string" ? from_artist : undefined,
+      typeof from_roles === "string" ? from_roles : undefined
+    );
+
+    // Check cache first
+    const cachedData = getCachedData(cacheKey);
+    if (cachedData) {
+      setData(cachedData);
+      setOffset(0);
+      setLoading(false);
+      return undefined;
+    }
 
     setLoading(true);
     setError(null);
@@ -53,7 +96,10 @@ export function ContributorPage() {
         const json = (await res.json()) as unknown;
         const err = (json as Record<string, unknown> | null)?.error;
         if (typeof err === "string" && err.length > 0) throw new Error(err);
-        setData(json as ContributorProfile);
+        const contributorData = json as ContributorProfile;
+        setData(contributorData);
+        // Cache the data for future navigation
+        setCachedData(cacheKey, contributorData);
       })
       .catch((err) => {
         if (err instanceof Error && err.name === "AbortError") return;

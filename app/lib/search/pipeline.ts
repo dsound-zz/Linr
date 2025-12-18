@@ -982,9 +982,6 @@ export async function searchCanonicalSong(
         return s >= 85 && isStudioRecording(r) && isAlbumOrSingleRelease(r);
       });
 
-      const shouldSkipDiscovery =
-        hasProminentExactMatch || hasHighConfidenceExactMatch;
-
       // Keep a useful debug payload for why we skipped discovery.
       const prelimTop = exactTitleMatches
         .map((r) => {
@@ -1029,15 +1026,33 @@ export async function searchCanonicalSong(
         .slice(0, 10)
         .map(([artist]) => artist);
 
+      const candidateMatchesTitle = candidateArtists.some(
+        (artist) => artist.toLowerCase() === title.toLowerCase(),
+      );
+
+      const shouldSkipDiscovery =
+        hasProminentExactMatch || hasHighConfidenceExactMatch || candidateMatchesTitle;
+
       if (!shouldSkipDiscovery) {
         // Discover album tracks by scanning release tracks
         const albumTrackStart = performance.now();
-        const discoveredAlbumTracks = await discoverAlbumTracks({
+        const albumTrackPromise = discoverAlbumTracks({
           title,
           candidateArtists,
           debugInfo,
         });
-        console.log(`[PERF] discoverAlbumTracks: ${(performance.now() - albumTrackStart).toFixed(0)}ms, found: ${discoveredAlbumTracks.length}`);
+        const albumTrackTimeout = new Promise<AlbumTrackCandidate[]>((resolve) =>
+          setTimeout(() => resolve([]), ALBUM_DISCOVERY_TIMEOUT_MS),
+        );
+        const discoveredAlbumTracks = await Promise.race([
+          albumTrackPromise,
+          albumTrackTimeout,
+        ]);
+        const albumTrackDuration = performance.now() - albumTrackStart;
+        const timedOut = albumTrackDuration >= ALBUM_DISCOVERY_TIMEOUT_MS;
+        console.log(
+          `[PERF] discoverAlbumTracks: ${albumTrackDuration.toFixed(0)}ms, found: ${discoveredAlbumTracks.length}, timedOut: ${timedOut}`,
+        );
 
         albumTrackCandidates = discoveredAlbumTracks;
 
@@ -1076,7 +1091,9 @@ export async function searchCanonicalSong(
         (debugInfo.stages as Record<string, unknown>).discoverySkipped = {
           reason: hasProminentExactMatch
             ? "Strong initial exact-title + prominent-artist candidate found; skipping expensive discovery steps"
-            : "High-confidence exact-title studio album/single match found; skipping expensive discovery steps",
+            : hasHighConfidenceExactMatch
+              ? "High-confidence exact-title studio album/single match found; skipping expensive discovery steps"
+              : "Title matches primary artist; skipping album-track discovery to avoid person-name timeouts",
           topCandidate: {
             artist: prelimTop?.r.artist,
             title: prelimTop?.r.title,
@@ -1918,9 +1935,31 @@ export async function searchCanonicalSong(
     // - Multi-word title-only queries (always ambiguous, album tracks already merged above)
     // - Single-word queries with close scores (score gap < CANONICAL_SCORE_GAP)
     const maxResults = !artistProvided && !isSingleWordQuery ? 10 : 5;
+    let ambiguousResults = results.slice(0, maxResults);
+
+    // Apply OpenAI reranking to ambiguous results to boost mainstream hits
+    // Only rerank if we have between 2-10 results
+    if (ambiguousResults.length >= 2 && ambiguousResults.length <= 10) {
+      try {
+        const rerankStartTime = performance.now();
+        const reranked = await rerankCandidates(ambiguousResults, query);
+        const rerankTime = performance.now() - rerankStartTime;
+
+        if (debugInfo) {
+          debugInfo.stages.ambiguousReranked = reranked;
+          debugInfo.stages.ambiguousRerankTiming = { ms: rerankTime };
+        }
+
+        ambiguousResults = reranked;
+      } catch (err) {
+        console.error("OpenAI rerank failed for ambiguous results", err);
+        // Keep original results on error
+      }
+    }
+
     const response: SearchResponse = {
       mode: "ambiguous",
-      results: results.slice(0, maxResults),
+      results: ambiguousResults,
     };
 
     if (debugInfo) {
@@ -1988,3 +2027,4 @@ function normalize(val: string): string {
     .replace(/\s+/g, " ")
     .trim();
 }
+const ALBUM_DISCOVERY_TIMEOUT_MS = 6000;

@@ -33,7 +33,7 @@ export async function rerankCandidates(
   }
 
   try {
-    const prompt = `Given these song candidates, pick the ONE most culturally recognized studio recording. Return a JSON object with an "ids" array of IDs in order of preference (most recognized first).
+    const prompt = `You are ranking music recordings to identify the most culturally significant and widely recognized version of a song.
 
 Query: "${query}"
 
@@ -45,7 +45,20 @@ ${candidates
   )
   .join("\n")}
 
-Return format: { "ids": ["id1", "id2", ...] }`;
+RANKING CRITERIA (in order of importance):
+1. **Mainstream recognition**: Prefer the version that charted, became a hit, or is most widely known
+2. **Original studio recording**: Prefer original artists over covers, tributes, or compilations
+3. **Commercial success**: Prefer versions that had radio play, album sales, or streaming popularity
+4. **Cultural impact**: Prefer versions that defined the song or became iconic
+5. **Recency as tiebreaker**: For truly equal versions, slightly prefer the earlier release
+
+EXAMPLES:
+- "Reminiscing" → Little River Band (1978) is the famous hit, not Russell Garcia or Buddy Holly versions
+- "Jump" → Van Halen (1983) is the massive hit, not Pointer Sisters or other covers
+- "Africa" → Toto (1982) is the iconic version, not tribute bands
+
+Return a JSON object with an "ids" array containing ALL candidate IDs ranked from most to least recognized:
+{ "ids": ["id1", "id2", "id3", ...] }`;
 
     const response = await client.chat.completions.create({
       model: OPENAI_MODEL,

@@ -1,3 +1,5 @@
+import type { ContributorSearchResult } from "../types";
+
 /**
  * Core data types for the Canonical Song Search pipeline
  */
@@ -56,12 +58,18 @@ export interface CanonicalResult {
   explanation?: string; // Human-readable reason for entity type
 }
 
+export type NormalizedRecordingSummary = CanonicalResult;
+
 /**
  * Search response that can be either canonical (single result) or ambiguous (multiple results)
  */
 export type SearchResponse =
   | { mode: "canonical"; result: CanonicalResult }
   | { mode: "ambiguous"; results: CanonicalResult[] };
+
+export type CombinedSearchResult =
+  | { type: "recording"; data: CanonicalResult }
+  | { type: "contributor"; data: ContributorSearchResult };
 
 /**
  * Parsed user query

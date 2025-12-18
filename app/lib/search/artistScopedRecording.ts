@@ -50,11 +50,17 @@ export async function discoverArtistScopedRecordings(params: {
   const topArtists = popularArtists.slice(0, 10);
   const artistsQueried = topArtists;
 
-  // Run all searches in parallel
+  // Run all searches in parallel with timeout protection
   const searchResults = await Promise.allSettled(
     topArtists.map(async (artist) => {
       try {
-        const rawRecordings = await searchByTitleAndArtist(title, artist, 10);
+        // Add 5-second timeout per artist search to prevent hanging
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Artist search timeout')), 5000)
+        );
+
+        const searchPromise = searchByTitleAndArtist(title, artist, 10);
+        const rawRecordings = await Promise.race([searchPromise, timeoutPromise]);
         const normalized = normalizeRecordings(rawRecordings);
         return { artist, recordings: normalized };
       } catch (err) {

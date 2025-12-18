@@ -61,6 +61,37 @@ export interface ContributorProfile {
   }[];
 }
 
+export interface ContributorKnownFor {
+  title: string;
+  artist: string;
+  recordingMBID?: string;
+}
+
+export interface ContributorSearchResult {
+  artistMBID: string;
+  name: string;
+  disambiguation?: string;
+  roles: string[];
+  knownFor: ContributorKnownFor[];
+  area?: string | null;
+}
+
+export interface ContributorResult {
+  entityType: "contributor";
+  artistName: string;
+  artistMBID: string;
+  primaryRoles?: string[];
+  area?: string | null;
+}
+
+export interface SongResult {
+  entityType: "recording" | "album_track" | "song_inferred";
+  title: string;
+  artist: string;
+  recordingMBID: string;
+  year?: number | null;
+}
+
 // MusicBrainz API Types
 export interface MusicBrainzArtist {
   id?: string;
@@ -72,6 +103,14 @@ export interface MusicBrainzArtist {
     primary?: boolean;
     type?: string;
   }>;
+  area?: {
+    id?: string;
+    name?: string;
+    "iso-3166-1-codes"?: string[];
+  };
+  disambiguation?: string;
+  score?: number;
+  type?: string;
 }
 
 export interface MusicBrainzArtistCreditEntry {

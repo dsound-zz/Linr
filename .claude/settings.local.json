@@ -22,7 +22,12 @@
       "Bash(node test-full-flow.js:*)",
       "Bash(timeout 30 curl:*)",
       "Bash(npm uninstall:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(node test-search-performance.js:*)",
+      "Bash(node test-nile-rogers.js:*)",
+      "Bash(node test-api-direct.js:*)",
+      "Bash(node test-intent-endpoint.js:*)",
+      "Bash(node -e:*)"
     ]
   }
 }

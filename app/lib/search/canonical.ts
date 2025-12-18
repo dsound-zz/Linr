@@ -29,13 +29,23 @@ function pickPreferredReleases(
   if (withYear.length === 0) return releases;
 
   const nonCompilation = withYear.filter((r) => !isCompilationRelease(r));
-  const candidates = nonCompilation.length > 0 ? nonCompilation : withYear;
 
-  const albumOrSingle = candidates.filter((r) => {
+  // Strongly prefer non-compilation releases
+  if (nonCompilation.length > 0) {
+    const albumOrSingle = nonCompilation.filter((r) => {
+      const p = (r.primaryType ?? "").toLowerCase();
+      return p === "album" || p === "single";
+    });
+    return albumOrSingle.length > 0 ? albumOrSingle : nonCompilation;
+  }
+
+  // Fallback: if ALL releases are compilations, prefer older compilation releases
+  // This helps when original release metadata is missing
+  const albumOrSingle = withYear.filter((r) => {
     const p = (r.primaryType ?? "").toLowerCase();
     return p === "album" || p === "single";
   });
-  return albumOrSingle.length > 0 ? albumOrSingle : candidates;
+  return albumOrSingle.length > 0 ? albumOrSingle : withYear;
 }
 
 /**

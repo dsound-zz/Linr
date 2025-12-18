@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { useRouter } from "next/router";
 
 import type { NormalizedRecording } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -24,28 +24,29 @@ export default function CreditsView({
   fromContributor?: string;
   recordingId?: string;
 }) {
+  const router = useRouter();
   // Pass the full data object so viewModel can access _rawRelations for MBID extraction
   const vm = buildCreditsViewModel(data);
 
-  // Determine back link based on where user came from
-  const backHref = fromContributor
-    ? `/contributor/${encodeURIComponent(fromContributor)}`
-    : "/";
   const backText = fromContributor
     ? `Back to ${fromContributor}`
     : "Back";
 
+  const handleBack = () => {
+    // Use router.back() to properly sync with browser history
+    router.back();
+  };
+
   return (
     <>
       <div className="flex items-center justify-between">
-        <Link href={backHref}>
-          <Button
-            variant="outline"
-            className="border-2 border-primary text-primary bg-background/75 shadow-sm"
-          >
-            {backText}
-          </Button>
-        </Link>
+        <Button
+          variant="outline"
+          className="border-2 border-primary text-primary bg-background/75 shadow-sm"
+          onClick={handleBack}
+        >
+          {backText}
+        </Button>
       </div>
 
       {/* Initial load (no data yet) */}

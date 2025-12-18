@@ -8,6 +8,32 @@ import CreditsView from "./components/CreditsView";
 const isAbortError = (err: unknown): err is DOMException =>
   err instanceof DOMException && err.name === "AbortError";
 
+// Client-side cache for recording data (survives navigation)
+const recordingCache = new Map<string, {
+  data: NormalizedRecording;
+  timestamp: number;
+}>();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function getCacheKey(id: string, source?: string): string {
+  return `${id}|${source || ''}`;
+}
+
+function getCachedRecording(key: string): NormalizedRecording | null {
+  const cached = recordingCache.get(key);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.data;
+  }
+  if (cached) {
+    recordingCache.delete(key);
+  }
+  return null;
+}
+
+function setCachedRecording(key: string, data: NormalizedRecording): void {
+  recordingCache.set(key, { data, timestamp: Date.now() });
+}
+
 export function RecordingPage() {
   const router = useRouter();
   const { id, source, from_contributor, from_recording_id } = router.query;
@@ -22,6 +48,17 @@ export function RecordingPage() {
   React.useEffect(() => {
     if (!router.isReady) return undefined;
     if (typeof id !== "string") return undefined;
+
+    const cacheKey = getCacheKey(id, typeof source === "string" ? source : undefined);
+
+    // Check cache first - if we have cached data, use it immediately
+    const cachedData = getCachedRecording(cacheKey);
+    if (cachedData) {
+      setData(cachedData);
+      setLoading(false);
+      setEnhancing(false);
+      return undefined;
+    }
 
     // Guard against race conditions when navigating quickly between recordings.
     // Only the latest request is allowed to update state.
@@ -77,7 +114,10 @@ export function RecordingPage() {
             const err2 = (j2 as Record<string, unknown> | null)?.error;
             if (typeof err2 === "string" && err2.length > 0) return;
             if (requestSeq.current !== seq) return;
-            setData(j2 as NormalizedRecording);
+            const enrichedData = j2 as NormalizedRecording;
+            setData(enrichedData);
+            // Cache the enriched data (this is the "complete" version)
+            setCachedRecording(cacheKey, enrichedData);
           })
           .catch((err) => {
             if (isAbortError(err)) return;

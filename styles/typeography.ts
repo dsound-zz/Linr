@@ -8,7 +8,8 @@ export const text = {
 
 export const surface = {
   // Prevent tiny mobile horizontal overflows from pills/long tokens/animations.
-  page: "min-h-dvh overflow-x-hidden bg-background text-foreground",
+  // Use svh to avoid phantom scrollbars from dynamic viewport rounding.
+  page: "min-h-svh overflow-x-hidden bg-background text-foreground",
   card: "rounded-2xl border-2 border-border bg-card text-card-foreground shadow-sm",
   cardPadded:
     "rounded-2xl border-2 border-border bg-card p-4 text-card-foreground shadow-sm",

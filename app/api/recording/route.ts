@@ -52,9 +52,9 @@ export async function GET(req: Request) {
     );
   }
 
-  // Only allow MusicBrainz lookup for MusicBrainz sources
+  // Only allow MusicBrainz lookup for MusicBrainz sources (including OpenAI-reranked)
   // Allow undefined/null source for backward compatibility
-  if (id.startsWith("wiki:") || (source && source !== "musicbrainz")) {
+  if (id.startsWith("wiki:") || (source && source !== "musicbrainz" && source !== "musicbrainz+openai")) {
     return NextResponse.json(
       {
         error: "Lookup is only supported for MusicBrainz sources",
