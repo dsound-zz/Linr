@@ -339,6 +339,32 @@ export async function lookupArtist(id: string): Promise<MusicBrainzArtist> {
   return artist;
 }
 
+export async function lookupArtistWithRecordings(id: string): Promise<MusicBrainzArtist> {
+  const mb = getMBClient();
+
+  const lookup = mb.lookup as unknown as (
+    this: unknown,
+    entity: string,
+    mbid: string,
+    inc: string[],
+  ) => Promise<MusicBrainzArtist>;
+
+  const artist = await lookup.call(mb, "artist", id, [
+    "aliases",
+    "tags",
+    "recording-rels",
+  ]);
+
+  await logMusicBrainzResponse(
+    "lookup",
+    artist as unknown as MusicBrainzRecording,
+    undefined,
+    id,
+  );
+
+  return artist;
+}
+
 export async function searchArtistByName(
   name: string,
 ): Promise<MusicBrainzArtist | null> {

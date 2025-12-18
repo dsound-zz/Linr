@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { performance } from "node:perf_hooks";
 import type { ContributorProfile } from "@/lib/types";
-import { getMBClient, lookupRecording, lookupArtist } from "@/lib/musicbrainz";
+import { getMBClient, lookupRecording, lookupArtist, lookupArtistWithRecordings } from "@/lib/musicbrainz";
 import type { MusicBrainzRecording } from "@/lib/types";
 import { verifyContributor, filterRecordings, enrichWithKnownWorks } from "@/lib/ai-contributor";
 
@@ -211,6 +211,40 @@ function addWorkRecordingQuery(state: ContributorCache, workId: string) {
   state.querySet.add(query);
   state.queryPlan.push({ query, offset: 0, done: false });
   state.completed = false;
+}
+
+async function addRecordingsFromRelationships(
+  state: ContributorCache,
+  artistId: string,
+): Promise<number> {
+  try {
+    const artistWithRels = await lookupArtistWithRecordings(artistId);
+    const relations = (artistWithRels as any).relations ?? [];
+
+    let addedCount = 0;
+    for (const rel of relations) {
+      // Only process recording relationships
+      if (rel["target-type"] !== "recording") continue;
+      if (!rel.recording) continue;
+
+      // Add the recording to state
+      const recording = rel.recording as MusicBrainzRecording;
+      const id = recording.id || recording["id"];
+      if (id && !state.recordingIds.has(id)) {
+        addRecordingToState(state, recording);
+        addedCount++;
+      }
+
+      if (state.recordings.length >= MAX_CONTRIBUTOR_RECORDINGS) {
+        break;
+      }
+    }
+
+    return addedCount;
+  } catch (error) {
+    console.error("Failed to fetch recording relationships:", error);
+    return 0;
+  }
 }
 
 async function processWorkQueryPlan(
@@ -534,6 +568,14 @@ export async function GET(request: NextRequest) {
       });
       metrics.resultCounts.aliases = aliasCandidates.size;
       aliasesExpanded = true;
+
+      // Fetch recording relationships (for session musicians/contributors)
+      const relStart = performance.now();
+      const relCount = await addRecordingsFromRelationships(state, artistId);
+      logStep("recording-rels", relStart, {
+        recordingsAdded: relCount,
+        totalRecordings: state.recordings.length,
+      });
     } else {
       // Ensure current search name is in the state
       for (const alias of aliasCandidates) {
