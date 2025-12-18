@@ -246,7 +246,22 @@ export function ContributorPage() {
           </Button>
 
           <div>
-            <h1 className={text.pageTitle}>{data.name}</h1>
+            <h1 className={text.pageTitle}>
+              {data.name}
+              {data.roleBreakdown && data.roleBreakdown.length > 0 && (
+                <>
+                  <span className="text-muted-foreground font-normal text-2xl mx-3">•</span>
+                  <span className="text-muted-foreground font-normal text-2xl">
+                    {data.roleBreakdown
+                      .filter(r => r.role.toLowerCase() !== 'performer')
+                      .slice(0, 3)
+                      .map(r => r.role)
+                      .join(", ") ||
+                    data.roleBreakdown[0]?.role}
+                  </span>
+                </>
+              )}
+            </h1>
             <div className={text.meta}>
               {data.totalContributions} contribution
               {data.totalContributions !== 1 ? "s" : ""} across{" "}
