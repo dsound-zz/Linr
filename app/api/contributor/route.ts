@@ -9,6 +9,7 @@ const MAX_CONTRIBUTOR_RECORDINGS = 400;
 const CONTRIBUTOR_PAGE_SIZE = 100;
 const WORK_PAGE_SIZE = 50;
 const MAX_FIRST_PAGE_LOOKUPS = 4;
+const RECORDING_DISCOVERY_TIMEOUT_MS = 10000; // 10 second timeout for recording discovery
 
 // Optional: Enable work-based queries (can be disabled for performance)
 const ENABLE_WORK_QUERIES = process.env.ENABLE_WORK_QUERIES !== 'false';
@@ -362,10 +363,25 @@ async function ensureMinimumRecordings(
 ): Promise<void> {
   if (state.completed || state.recordings.length >= neededCount) return;
   if (!state.processing) {
-    state.processing = processQueryPlan(state, neededCount, true).finally(() => {
-      state.processing = undefined;
-      startBackgroundFetch(state);
-    });
+    const timeoutPromise = new Promise<void>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`Recording discovery timeout after ${RECORDING_DISCOVERY_TIMEOUT_MS}ms`)),
+        RECORDING_DISCOVERY_TIMEOUT_MS
+      )
+    );
+
+    state.processing = Promise.race([
+      processQueryPlan(state, neededCount, true),
+      timeoutPromise
+    ])
+      .catch((error) => {
+        console.warn('[Contributor API] Recording discovery timeout, returning partial results:', error.message);
+        // Don't throw - just return what we have so far
+      })
+      .finally(() => {
+        state.processing = undefined;
+        startBackgroundFetch(state);
+      });
   }
   await state.processing;
 }
