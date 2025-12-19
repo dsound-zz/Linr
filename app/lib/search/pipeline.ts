@@ -82,6 +82,7 @@ const PROMINENT_ARTISTS = [
   "Adele",
   "Beyoncé",
   "Rihanna",
+  "Britney Spears",
   "Justin Timberlake",
   "Bruno Mars",
   "Ed Sheeran",
@@ -286,8 +287,13 @@ function applyFilters(
   queryTitle: string,
 ): NormalizedRecording[] {
   return recordings.filter((rec) => {
-    // Title must match exactly or be a prefix
-    if (!isExactOrPrefixTitleMatch(rec, queryTitle)) return false;
+    // Recordings from obvious song probe bypass title matching
+    // These come from artist-scoped searches using canonical titles that may differ from query
+    const recAsAny = rec as NormalizedRecording & { fromObviousSongProbe?: boolean };
+    const fromObviousSongProbe = recAsAny.fromObviousSongProbe === true;
+
+    // Title must match exactly or be a prefix (unless from obvious song probe)
+    if (!fromObviousSongProbe && !isExactOrPrefixTitleMatch(rec, queryTitle)) return false;
 
     // Release-track and album-title-inferred recordings skip studio/album filters
     // They come from album tracklists/titles and may not have complete metadata
@@ -829,7 +835,7 @@ export async function searchCanonicalSong(
           if (rec?.id) dedupRaw.set(rec.id, rec);
         }
 
-        // If this single-word title is an “obvious hit”, inject artist-scoped
+        // If this single-word title is an "obvious hit", inject artist-scoped
         // results early (cheap + cached) to avoid missing the canonical artist.
         const obviousSong = getObviousSongForTitle(title);
         if (obviousSong) {
@@ -840,7 +846,11 @@ export async function searchCanonicalSong(
               25,
             );
             for (const rec of obvious) {
-              if (rec?.id) dedupRaw.set(rec.id, rec);
+              if (rec?.id) {
+                dedupRaw.set(rec.id, rec);
+                // Mark as from obvious song probe so it can bypass strict title filtering
+                (rec as unknown as Record<string, unknown>).fromObviousSongProbe = true;
+              }
             }
             if (debugInfo) {
               (debugInfo.stages as Record<string, unknown>).obviousSongProbe = {
@@ -909,7 +919,7 @@ export async function searchCanonicalSong(
         };
       }
 
-      // Ultra-fast “obvious hit” probe: if we recognize the title as a cultural
+      // Ultra-fast "obvious hit" probe: if we recognize the title as a cultural
       // default, inject an artist-scoped search result set early. This is cheap
       // (small limit, cached) and improves recall without excluding anyone else.
       const obviousSong = getObviousSongForTitle(title);
@@ -921,7 +931,11 @@ export async function searchCanonicalSong(
             25,
           );
           for (const rec of obvious) {
-            if (rec?.id) dedupRaw.set(rec.id, rec);
+            if (rec?.id) {
+              dedupRaw.set(rec.id, rec);
+              // Mark as from obvious song probe so it can bypass strict title filtering
+              (rec as unknown as Record<string, unknown>).fromObviousSongProbe = true;
+            }
           }
           rawRecordings = Array.from(dedupRaw.values());
           if (debugInfo) {
@@ -1262,6 +1276,13 @@ export async function searchCanonicalSong(
         .split(/\s+/)
         .filter((w) => w.length > 0);
       const wordCountMatch = recTitleWords.length === queryWordCount;
+
+      // Preserve recordings from obvious song probe even if word count doesn't match
+      // These come from artist-scoped searches using canonical titles
+      const recAsAny = rec as NormalizedRecording & { fromObviousSongProbe?: boolean };
+      if (recAsAny.fromObviousSongProbe === true) {
+        return true;
+      }
 
       // Preserve release-track fallback recordings even if word count doesn't match
       if (!wordCountMatch) {

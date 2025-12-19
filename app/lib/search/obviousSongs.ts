@@ -206,6 +206,11 @@ OBVIOUS_SONGS[normalizeTitleKeyLoose("My Hear Will Go On")] = {
   canonicalTitle: "My Heart Will Go On",
 };
 
+OBVIOUS_SONGS[normalizeTitleKeyLoose("Hit Me Baby One More Time")] = {
+  artist: "Britney Spears",
+  canonicalTitle: "...Baby One More Time",
+};
+
 export function getObviousSongForTitle(title: string): ObviousSong | null {
   const key = normalizeTitleKeyLoose(title);
   return OBVIOUS_SONGS[key] ?? null;

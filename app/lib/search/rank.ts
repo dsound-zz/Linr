@@ -51,6 +51,13 @@ export function scoreRecording(
 ): number {
   let score = 0;
 
+  // Recordings from obvious song probe get a major boost
+  // These are culturally canonical songs identified by our curated list
+  const recAsAny = recording as NormalizedRecording & { fromObviousSongProbe?: boolean };
+  if (recAsAny.fromObviousSongProbe === true) {
+    score += 50; // Large boost for obvious/canonical songs
+  }
+
   const recTitle = normalize(recording.title);
   const qTitle = normalize(query.title);
   const releases = recording.releases;

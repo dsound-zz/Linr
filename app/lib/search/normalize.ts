@@ -37,6 +37,10 @@ export function normalizeRecording(
         ? Number(rec["ext:score"])
         : null;
 
+  // Preserve flags from raw recording
+  const recAsAny = rec as unknown as Record<string, unknown>;
+  const fromObviousSongProbe = recAsAny.fromObviousSongProbe === true;
+
   return {
     id,
     title,
@@ -45,6 +49,7 @@ export function normalizeRecording(
     lengthMs: rec.length ?? null,
     score,
     source: source ?? "musicbrainz",
+    ...(fromObviousSongProbe && { fromObviousSongProbe: true }),
   };
 }
 
