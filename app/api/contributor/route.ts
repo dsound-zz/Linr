@@ -636,16 +636,18 @@ export async function GET(request: NextRequest) {
     const aliasKeys = state.aliasKeys;
     metrics.resultCounts.totalRecordings = state.recordings.length;
 
-    // Step 3: For the requested page, do detailed lookups to get relationship data
+    // Step 3: Process all available recordings to build contributions
+    // NOTE: We paginate contributions (after filtering), not recordings
+    // This ensures pagination works correctly even when many recordings don't match the contributor
     const totalRecordings = state.completed
       ? state.recordings.length
       : Math.max(state.recordings.length, neededCount);
     const paginationStart = performance.now();
-    const pageRecordings = state.recordings.slice(offset, offset + limit);
-    logStep("pagination", paginationStart, {
-      offset,
-      limit,
-      pageCount: pageRecordings.length,
+    // Process ALL recordings, not just the current page
+    // We'll paginate the contributions later
+    const pageRecordings = state.recordings;
+    logStep("recordings-for-processing", paginationStart, {
+      recordingsToProcess: pageRecordings.length,
       totalRecordings,
     });
 
@@ -663,8 +665,11 @@ export async function GET(request: NextRequest) {
     const detailedRecordings = await Promise.all(
       pageRecordings.map(async (rec, idx) => {
         if (!rec.id) return rec;
-        const shouldLookup =
-          offset > 0 || idx < Math.min(MAX_FIRST_PAGE_LOOKUPS, pageRecordings.length);
+        // Limit detailed lookups to avoid performance issues
+        // On first page: lookup first 50 recordings
+        // On subsequent pages: lookup all available (they're already cached or limited)
+        const maxLookupsForPage = offset === 0 ? 50 : pageRecordings.length;
+        const shouldLookup = idx < maxLookupsForPage;
         if (!shouldLookup) {
           return rec;
         }
@@ -986,7 +991,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Convert to arrays and sort
-    const contributions = Array.from(contributionsMap.values())
+    const allContributions = Array.from(contributionsMap.values())
       .map((c) => ({
         ...c,
         roles: Array.from(c.roles).sort(),
@@ -1001,6 +1006,10 @@ export async function GET(request: NextRequest) {
         return 0;
       });
 
+    // Paginate the contributions (not the recordings)
+    // This ensures we return the correct page even after filtering
+    const contributions = allContributions.slice(offset, offset + limit);
+
     const roleBreakdown = Array.from(roleCountMap.entries())
       .map(([role, count]) => ({ role, count }))
       .sort((a, b) => b.count - a.count); // Sort by count descending
@@ -1010,18 +1019,13 @@ export async function GET(request: NextRequest) {
       0,
     );
 
-    // If we're showing AI-enriched works, don't offer pagination
-    // (AI gives us a fixed set of ~10-15 known works, not hundreds to paginate through)
-    const hasMore = aiEnrichedWorks.length > 0
-      ? false // No pagination for AI-enriched results
-      : (!state.completed || offset + limit < state.recordings.length);
+    // Pagination is based on contributions, not raw recordings
+    const hasMore = offset + limit < allContributions.length;
 
     const profile: ContributorProfile = {
       name,
       totalContributions,
-      totalRecordings: aiEnrichedWorks.length > 0
-        ? contributionsMap.size // For AI results, show actual count of what we're displaying
-        : totalRecordings, // For MusicBrainz results, show the total available
+      totalRecordings: allContributions.length, // Total number of unique contributions
       hasMore,
       roleBreakdown,
       contributions,

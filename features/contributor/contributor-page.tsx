@@ -120,7 +120,9 @@ export function ContributorPage() {
     if (!data || loadingMore || !data.hasMore || typeof name !== "string") return;
 
     setLoadingMore(true);
-    const newOffset = offset + LIMIT;
+    // Use the actual number of contributions currently shown, not LIMIT
+    // This is important because filtering may result in fewer contributions than the limit
+    const newOffset = data.contributions.length;
 
     try {
       const params = new URLSearchParams({
