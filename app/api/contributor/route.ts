@@ -9,7 +9,7 @@ import { getContributorEnrichment } from "@/lib/contributor-enrichment";
 const MAX_CONTRIBUTOR_RECORDINGS = 400;
 const CONTRIBUTOR_PAGE_SIZE = 100;
 const WORK_PAGE_SIZE = 50;
-const MAX_FIRST_PAGE_LOOKUPS = 4;
+const MAX_FIRST_PAGE_LOOKUPS = 20; // Increased from 4 to fetch proper artist names for all first-page results
 const RECORDING_DISCOVERY_TIMEOUT_MS = 10000; // 10 second timeout for recording discovery
 
 // Optional: Enable work-based queries (can be disabled for performance)
