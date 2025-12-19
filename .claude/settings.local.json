@@ -27,7 +27,8 @@
       "Bash(node test-nile-rogers.js:*)",
       "Bash(node test-api-direct.js:*)",
       "Bash(node test-intent-endpoint.js:*)",
-      "Bash(node -e:*)"
+      "Bash(node -e:*)",
+      "Bash(node:*)"
     ]
   }
 }
