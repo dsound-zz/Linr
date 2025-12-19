@@ -4,6 +4,7 @@ import type { ContributorProfile } from "@/lib/types";
 import { getMBClient, lookupRecording, lookupArtist, lookupArtistWithRecordings } from "@/lib/musicbrainz";
 import type { MusicBrainzRecording } from "@/lib/types";
 import { verifyContributor, filterRecordings, enrichWithKnownWorks } from "@/lib/ai-contributor";
+import { getContributorEnrichment } from "@/lib/contributor-enrichment";
 
 const MAX_CONTRIBUTOR_RECORDINGS = 400;
 const CONTRIBUTOR_PAGE_SIZE = 100;
@@ -687,7 +688,11 @@ export async function GET(request: NextRequest) {
     let aiEnrichedWorks: Array<{ title: string; artist: string; confidence: number }> = [];
     let verification: Awaited<ReturnType<typeof verifyContributor>> = null;
     const enableAiFiltering = offset > 0; // Only filter for subsequent pages
+    // DISABLED: AI enrichment without specific song context causes hallucinations
+    // Use manual enrichment (contributor-enrichment.ts) instead for reliable data
+    const enableAiEnrichment = false;
 
+    // Enable AI verification only when we have song context to avoid hallucinations
     if (mbid && fromSong && fromArtist) {
       try {
         // Step 3a: Verify contributor identity with AI (quick, ~1-2 seconds)
@@ -695,11 +700,11 @@ export async function GET(request: NextRequest) {
         verification = await verifyContributor({
           name,
           mbid,
-          originatingSong: {
+          originatingSong: fromSong && fromArtist ? {
             title: fromSong,
             artist: fromArtist,
             roles: fromRoles ? fromRoles.split(',') : [],
-          },
+          } : undefined,
         });
         logStep("ai-verification", aiVerifyStart, {
           triggered: true,
@@ -754,18 +759,18 @@ export async function GET(request: NextRequest) {
           }
 
           // Step 3c: If MusicBrainz data is insufficient, enrich with AI-inferred works
-          // Only enrich on first page load when we haven't filtered yet
-          if (!enableAiFiltering && aiFilteredRecordings.length < 3) {
+          // Only enrich on first page load when we have sparse data
+          if (enableAiEnrichment) {
             const aiEnrichStart = performance.now();
             aiEnrichedWorks = await enrichWithKnownWorks({
               name,
               mbid,
               verification,
-              originatingSong: {
+              originatingSong: fromSong && fromArtist ? {
                 title: fromSong,
                 artist: fromArtist,
                 roles: fromRoles?.split(',') || [],
-              },
+              } : undefined,
             });
             logStep("ai-enrichment", aiEnrichStart, {
               enrichedCount: aiEnrichedWorks.length,
@@ -948,6 +953,35 @@ export async function GET(request: NextRequest) {
             roleCountMap.set(role, (roleCountMap.get(role) ?? 0) + 1);
           }
         }
+      }
+    }
+
+    // Add manually-verified enrichment credits for contributors with incomplete MusicBrainz data
+    if (mbid) {
+      const enrichment = getContributorEnrichment(mbid);
+      if (enrichment && enrichment.additionalCredits.length > 0) {
+        for (const credit of enrichment.additionalCredits) {
+          const syntheticId = `enriched-${credit.title.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${credit.artist.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+
+          if (!contributionsMap.has(syntheticId)) {
+            contributionsMap.set(syntheticId, {
+              recordingId: syntheticId,
+              title: credit.title,
+              artist: credit.artist,
+              releaseDate: credit.year ? `${credit.year}` : null,
+              roles: new Set(credit.roles),
+            });
+
+            // Update role counts
+            for (const role of credit.roles) {
+              roleCountMap.set(role, (roleCountMap.get(role) ?? 0) + 1);
+            }
+          }
+        }
+        console.log('[Contributor API] Added manual enrichment:', {
+          name,
+          enrichedCount: enrichment.additionalCredits.length,
+        });
       }
     }
 
