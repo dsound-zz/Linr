@@ -12,7 +12,9 @@ const MAX_FIRST_PAGE_LOOKUPS = 4;
 const RECORDING_DISCOVERY_TIMEOUT_MS = 10000; // 10 second timeout for recording discovery
 
 // Optional: Enable work-based queries (can be disabled for performance)
-const ENABLE_WORK_QUERIES = process.env.ENABLE_WORK_QUERIES !== 'false';
+// DISABLED: Work queries cause too many false positives for session musicians/performers
+// They're designed for songwriters/composers, not performers
+const ENABLE_WORK_QUERIES = false;
 
 // Performance tracking
 interface PerformanceMetrics {
