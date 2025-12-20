@@ -260,11 +260,21 @@ async function processWorkQueryPlan(
     if (plan.done) continue;
 
     while (!plan.done && state.recordings.length < MAX_CONTRIBUTOR_RECORDINGS) {
-      const result = await mb.search("work", {
+      // Add timeout to work searches too
+      const searchPromise = mb.search("work", {
         query: plan.query,
         limit: WORK_PAGE_SIZE,
         offset: plan.offset,
       });
+
+      const result = await withTimeout(searchPromise, 10000);
+
+      // If search timed out, mark this query as done and move to next
+      if (!result) {
+        console.warn(`[Contributor API] Work search timed out for query: ${plan.query}`);
+        plan.done = true;
+        break;
+      }
 
       const works = result.works ?? [];
       plan.offset += WORK_PAGE_SIZE;
@@ -296,7 +306,16 @@ async function processQueryPlan(
   stopAfterNeeded: boolean,
 ): Promise<void> {
   const mb = getMBClient();
+  const startTime = performance.now();
+  const MAX_QUERY_TIME_MS = 25000; // Don't spend more than 25 seconds querying
+
   while (state.recordings.length < MAX_CONTRIBUTOR_RECORDINGS) {
+    // Safety: if we've been querying for too long, stop and return what we have
+    if (performance.now() - startTime > MAX_QUERY_TIME_MS) {
+      console.warn('[Contributor API] Query time limit reached, returning partial results');
+      return;
+    }
+
     let plan = state.queryPlan.find((candidate) => !candidate.done);
 
     if (!plan) {
@@ -312,11 +331,28 @@ async function processQueryPlan(
     }
 
     while (!plan.done && state.recordings.length < MAX_CONTRIBUTOR_RECORDINGS) {
-      const result = await mb.search("recording", {
+      // Safety: check time limit on each iteration
+      if (performance.now() - startTime > MAX_QUERY_TIME_MS) {
+        console.warn('[Contributor API] Query time limit reached during plan execution');
+        return;
+      }
+
+      // Add timeout to individual MusicBrainz searches to prevent hanging
+      // If a search takes more than 10 seconds, skip it and move to the next query
+      const searchPromise = mb.search("recording", {
         query: plan.query,
         limit: CONTRIBUTOR_PAGE_SIZE,
         offset: plan.offset,
       });
+
+      const result = await withTimeout(searchPromise, 10000);
+
+      // If search timed out, mark this query as done and move to next
+      if (!result) {
+        console.warn(`[Contributor API] Search timed out for query: ${plan.query}`);
+        plan.done = true;
+        break;
+      }
 
       const rawRecordings = result.recordings ?? [];
       plan.offset += CONTRIBUTOR_PAGE_SIZE;
@@ -650,7 +686,7 @@ export async function GET(request: NextRequest) {
       totalRecordings,
     });
 
-    // Do detailed lookups for recordings where we need complete relationship data
+    // Do detailed lookups for recordings where we need complete artist and relationship data
     const lookupStart = performance.now();
     /**
      * PERF NOTE (2025-02-14):
@@ -662,28 +698,38 @@ export async function GET(request: NextRequest) {
      * back to lightweight search payloads for the remainder.
      *
      * PERF NOTE (2025-12-20):
-     * For performance, we only lookup the first 50 recordings to get complete artist-credit and
-     * relationship data. For the rest, we extract artist names from the search result data itself
-     * (which includes basic artist-credit in releases). This keeps Load More fast while still
-     * providing artist names for all recordings.
+     * We need artist names for ALL recordings to avoid "Unknown Artist" in the UI.
+     * Strategy: Lookup ALL recordings, but rely heavily on cache. The cache has 1hr TTL
+     * and holds up to 1000 recordings, so subsequent loads and pagination are fast.
+     * The first load might be slower, but it's a one-time cost per contributor.
      */
-    const detailedRecordings = await Promise.all(
-      pageRecordings.map(async (rec, idx) => {
-        if (!rec.id) return rec;
+    // Batch lookups to avoid overwhelming MusicBrainz and hitting rate limits
+    // Process in chunks of 10 with small delays between batches
+    const BATCH_SIZE = 10;
+    const BATCH_DELAY_MS = 100; // Small delay between batches
+    const detailedRecordings: MusicBrainzRecording[] = [];
 
-        // Only lookup first 50 recordings for complete data
-        // Beyond that, we rely on artist extraction from search results
-        const shouldLookup = idx < 50;
+    for (let i = 0; i < pageRecordings.length; i += BATCH_SIZE) {
+      const batch = pageRecordings.slice(i, i + BATCH_SIZE);
 
-        if (!shouldLookup) {
-          return rec;
-        }
+      const batchResults = await Promise.all(
+        batch.map(async (rec) => {
+          if (!rec.id) return rec;
 
-        metrics.queryCounts.recordingLookups++;
-        const detailed = await lookupRecordingCached(rec.id);
-        return detailed || rec; // Fallback to search result if lookup fails
-      })
-    );
+          // Check cache first - if cached, this is instant
+          metrics.queryCounts.recordingLookups++;
+          const detailed = await lookupRecordingCached(rec.id);
+          return detailed || rec;
+        })
+      );
+
+      detailedRecordings.push(...batchResults);
+
+      // Small delay between batches to respect rate limits (except for last batch)
+      if (i + BATCH_SIZE < pageRecordings.length) {
+        await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+      }
+    }
     const lookupDuration = logStep("recording-lookups", lookupStart, {
       count: metrics.queryCounts.recordingLookups,
       pageRecordings: pageRecordings.length,
@@ -852,6 +898,7 @@ export async function GET(request: NextRequest) {
           artist = recAny["artist-name"];
         }
       }
+
 
       // Extract release date
       const releaseDate =
