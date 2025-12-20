@@ -650,7 +650,7 @@ export async function GET(request: NextRequest) {
       totalRecordings,
     });
 
-    // Do detailed lookups in parallel for this page using cache
+    // Do detailed lookups for recordings where we need complete relationship data
     const lookupStart = performance.now();
     /**
      * PERF NOTE (2025-02-14):
@@ -662,26 +662,23 @@ export async function GET(request: NextRequest) {
      * back to lightweight search payloads for the remainder.
      *
      * PERF NOTE (2025-12-20):
-     * For pagination (Load More), we only need to lookup recordings for the CURRENT page,
-     * not all recordings. Calculate the range of recordings we need for this specific page.
+     * For performance, we only lookup the first 50 recordings to get complete artist-credit and
+     * relationship data. For the rest, we extract artist names from the search result data itself
+     * (which includes basic artist-credit in releases). This keeps Load More fast while still
+     * providing artist names for all recordings.
      */
     const detailedRecordings = await Promise.all(
       pageRecordings.map(async (rec, idx) => {
         if (!rec.id) return rec;
 
-        // Calculate which recordings we need to lookup for this page
-        // We need recordings in the range [offset, offset + limit]
-        // But we can only lookup recordings we actually have fetched
-        const isInCurrentPage = idx >= offset && idx < offset + limit;
-
-        // Additionally, lookup the first 50 on initial page for better quality
-        const isInInitialBatch = offset === 0 && idx < 50;
-
-        const shouldLookup = isInCurrentPage || isInInitialBatch;
+        // Only lookup first 50 recordings for complete data
+        // Beyond that, we rely on artist extraction from search results
+        const shouldLookup = idx < 50;
 
         if (!shouldLookup) {
           return rec;
         }
+
         metrics.queryCounts.recordingLookups++;
         const detailed = await lookupRecordingCached(rec.id);
         return detailed || rec; // Fallback to search result if lookup fails
@@ -825,12 +822,35 @@ export async function GET(request: NextRequest) {
       const title = recording.title ?? "Unknown Title";
 
       // Extract artist name from artist-credit (handle both string and object types)
+      // Search results and lookup results may have different structures
       const firstCredit = recording["artist-credit"]?.[0];
       let artist = "Unknown Artist";
       if (typeof firstCredit === "string") {
         artist = firstCredit;
       } else if (firstCredit) {
         artist = firstCredit.name ?? firstCredit.artist?.name ?? "Unknown Artist";
+      }
+
+      // Fallback 1: if artist-credit is missing/incomplete, try to extract from releases
+      // This handles cases where search results don't have full artist-credit populated
+      if (artist === "Unknown Artist" && recording.releases && recording.releases.length > 0) {
+        const firstRelease = recording.releases[0];
+        const releaseCredit = firstRelease["artist-credit"]?.[0];
+        if (typeof releaseCredit === "string") {
+          artist = releaseCredit;
+        } else if (releaseCredit) {
+          artist = releaseCredit.name ?? releaseCredit.artist?.name ?? "Unknown Artist";
+        }
+      }
+
+      // Fallback 2: try top-level artist property (some search results have this)
+      if (artist === "Unknown Artist") {
+        const recAny = recording as any;
+        if (recAny.artist) {
+          artist = recAny.artist;
+        } else if (recAny["artist-name"]) {
+          artist = recAny["artist-name"];
+        }
       }
 
       // Extract release date
