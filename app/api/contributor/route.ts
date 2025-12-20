@@ -9,7 +9,6 @@ import { getContributorEnrichment } from "@/lib/contributor-enrichment";
 const MAX_CONTRIBUTOR_RECORDINGS = 400;
 const CONTRIBUTOR_PAGE_SIZE = 100;
 const WORK_PAGE_SIZE = 50;
-const MAX_FIRST_PAGE_LOOKUPS = 20; // Increased from 4 to fetch proper artist names for all first-page results
 const RECORDING_DISCOVERY_TIMEOUT_MS = 35000; // 35 second timeout for recording discovery
 
 // Optional: Enable work-based queries (can be disabled for performance)
@@ -661,15 +660,25 @@ export async function GET(request: NextRequest) {
      * every offset=0 request, and unrelated to AI (not triggered). ensureMinimumRecordings stayed bounded.
      * To keep the first page < 8s we cap detailed lookups to a smaller batch on the first page and fall
      * back to lightweight search payloads for the remainder.
+     *
+     * PERF NOTE (2025-12-20):
+     * For pagination (Load More), we only need to lookup recordings for the CURRENT page,
+     * not all recordings. Calculate the range of recordings we need for this specific page.
      */
     const detailedRecordings = await Promise.all(
       pageRecordings.map(async (rec, idx) => {
         if (!rec.id) return rec;
-        // Limit detailed lookups to avoid performance issues
-        // On first page: lookup first 50 recordings
-        // On subsequent pages: lookup all available (they're already cached or limited)
-        const maxLookupsForPage = offset === 0 ? 50 : pageRecordings.length;
-        const shouldLookup = idx < maxLookupsForPage;
+
+        // Calculate which recordings we need to lookup for this page
+        // We need recordings in the range [offset, offset + limit]
+        // But we can only lookup recordings we actually have fetched
+        const isInCurrentPage = idx >= offset && idx < offset + limit;
+
+        // Additionally, lookup the first 50 on initial page for better quality
+        const isInInitialBatch = offset === 0 && idx < 50;
+
+        const shouldLookup = isInCurrentPage || isInInitialBatch;
+
         if (!shouldLookup) {
           return rec;
         }
@@ -679,10 +688,10 @@ export async function GET(request: NextRequest) {
       })
     );
     const lookupDuration = logStep("recording-lookups", lookupStart, {
-      count:
-        offset > 0
-          ? pageRecordings.length
-          : Math.min(MAX_FIRST_PAGE_LOOKUPS, pageRecordings.length),
+      count: metrics.queryCounts.recordingLookups,
+      pageRecordings: pageRecordings.length,
+      offset,
+      limit,
     });
     metrics.recordingLookupsMs = lookupDuration;
 
