@@ -28,7 +28,8 @@
       "Bash(node test-api-direct.js:*)",
       "Bash(node test-intent-endpoint.js:*)",
       "Bash(node -e:*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(cat:*)"
     ]
   }
 }

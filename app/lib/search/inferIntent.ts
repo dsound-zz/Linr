@@ -1,6 +1,7 @@
 import { parseUserQuery } from "@/lib/parseQuery";
 import { getMBClient } from "@/lib/musicbrainz";
 import { searchContributorsByName } from "./searchContributors";
+import { getObviousSongForTitle } from "./obviousSongs";
 import type { ContributorSearchResult, MusicBrainzArtist, MusicBrainzRecording } from "@/lib/types";
 
 export type SearchIntent =
@@ -15,6 +16,13 @@ export interface IntentResolution {
 const NAME_TOKEN_REGEX = /^[a-zA-ZÀ-ÖØ-öø-ÿ'.&-]+$/;
 
 function shouldProbeContributors(tokens: string[], query: string): boolean {
+  // Skip contributor probing for obvious songs
+  // This prevents culturally canonical songs from being misclassified as person names
+  const obviousSong = getObviousSongForTitle(query);
+  if (obviousSong) {
+    return false;
+  }
+
   if (tokens.length >= 2 && tokens.length <= 5) {
     const validTokens = tokens.filter((token) => NAME_TOKEN_REGEX.test(token));
     if (validTokens.length === tokens.length) {
@@ -23,7 +31,7 @@ function shouldProbeContributors(tokens: string[], query: string): boolean {
   }
   // If the query is title-like (quotes, separators) we avoid extra lookups
   const looksLikeTitle =
-    /["“”]/.test(query) ||
+    /["""]/.test(query) ||
     /\sby\s/i.test(query) ||
     /[-–—]/.test(query) ||
     /feat\.?|ft\.?/.test(query) ||

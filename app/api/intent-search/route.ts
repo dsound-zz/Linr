@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 
 import { searchCanonicalSong } from "@/lib/search";
 import { searchContributorIntent } from "@/lib/search/searchContributorIntent";
+import { getObviousSongForTitle } from "@/lib/search/obviousSongs";
 import type { IntentSearchResponse } from "@/lib/search/intentTypes";
 import type { SearchResponse, CanonicalResult } from "@/lib/search/types";
 
@@ -85,6 +86,10 @@ export async function GET(request: Request) {
 
     const [topContrib, secondContrib] = contributorIntent.candidates;
 
+    // Check if this is an obvious song (culturally canonical)
+    // These should always be treated as song queries, never contributor queries
+    const obviousSong = getObviousSongForTitle(q);
+
     const songIsStrong =
       songResponse?.mode === "canonical" &&
       (songResponse.result.confidenceScore ?? 0) >= SONG_CONFIDENCE;
@@ -111,9 +116,25 @@ export async function GET(request: Request) {
 
     let payload: IntentSearchResponse;
     // Prefer songs over contributors when:
-    // 1. Song is strong (canonical with high confidence), OR
-    // 2. Song has multiple results (likely a well-known song title) AND contributor is just one match
-    if (songIsStrong && songResponse?.mode === "canonical") {
+    // 1. Query matches an obvious song (culturally canonical) - ALWAYS prefer song
+    // 2. Song is strong (canonical with high confidence), OR
+    // 3. Song has multiple results (likely a well-known song title) AND contributor is just one match
+    if (obviousSong && songResponse) {
+      // Obvious songs should never return contributor intent
+      if (songResponse.mode === "canonical") {
+        payload = {
+          intent: "recording",
+          recordingId: songResponse.result.id,
+        };
+      } else {
+        // Even if ambiguous, return the recordings for obvious songs
+        payload = {
+          intent: "ambiguous",
+          recordings: extractRecordings(songResponse),
+          contributors: [], // Don't show contributors for obvious songs
+        };
+      }
+    } else if (songIsStrong && songResponse?.mode === "canonical") {
       payload = {
         intent: "recording",
         recordingId: songResponse.result.id,
