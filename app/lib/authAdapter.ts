@@ -52,7 +52,7 @@ export function libsqlAdapter(): Adapter {
   };
 
   return {
-    async createUser(user) {
+    async createUser(user: Omit<AdapterUser, "id">) {
       await ready;
       const id = crypto.randomUUID();
       await db.execute({
