@@ -112,7 +112,7 @@ export async function GET(request: Request) {
       // Either only one candidate, or top candidate has significantly higher score
       (contributorIntent.candidates.length === 1 ||
         !secondContrib ||
-        topContrib.score - secondContrib.score >= 0.3);
+        topContrib.score - secondContrib.score >= 0.2);
 
     let payload: IntentSearchResponse;
     // Prefer songs over contributors when:

@@ -29,7 +29,9 @@
       "Bash(node test-intent-endpoint.js:*)",
       "Bash(node -e:*)",
       "Bash(node:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(ls:*)",
+      "Bash(open:*)"
     ]
   }
 }
