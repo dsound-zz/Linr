@@ -1,10 +1,12 @@
 import OpenAI from "openai";
 import { NORMALIZE_RECORDING_TEMPLATE } from "./prompts";
 import { formatArtistCredit } from "./musicbrainz";
+import { normalizeArtistName } from "./search/utils/normalizeArtist";
 import { getWikipediaPersonnel } from "./wikipedia";
 import { fetchDiscogsCredits } from "./discogs";
 import type {
   NormalizedRecording,
+  ExternalLinks,
   SearchResultItem,
   MusicBrainzRecording,
   MusicBrainzRelease,
@@ -263,6 +265,83 @@ function gatherAllRelations(
   return rels;
 }
 
+function buildSearchLinks(title: string, artist: string): ExternalLinks {
+  const normalized = normalizeArtistName(artist ?? "");
+  const primaryArtist = normalized.primary || artist || "";
+  const query = `${title ?? ""} ${primaryArtist}`.trim();
+  const encodedQuery = encodeURIComponent(query);
+
+  return {
+    spotifySearch: `https://open.spotify.com/search/${encodedQuery}`,
+    appleMusicSearch: `https://music.apple.com/search?term=${encodedQuery}`,
+  };
+}
+
+function extractRelationUrl(rel: MusicBrainzRelation): string | null {
+  const url = (rel as { url?: { resource?: string } })?.url?.resource;
+  if (typeof url === "string" && url.startsWith("http")) return url;
+
+  const targetName = rel?.target?.name;
+  if (typeof targetName === "string" && targetName.startsWith("http")) {
+    return targetName;
+  }
+
+  const relName = rel?.name;
+  if (typeof relName === "string" && relName.startsWith("http")) {
+    return relName;
+  }
+
+  return null;
+}
+
+function isExactSpotifyUrl(url: URL): boolean {
+  return url.hostname === "open.spotify.com" && url.pathname.startsWith("/track/");
+}
+
+function isExactAppleMusicUrl(url: URL): boolean {
+  const path = url.pathname.toLowerCase();
+  if (path.includes("/song/")) return true;
+  if (path.includes("/album/") && url.searchParams.has("i")) return true;
+  return false;
+}
+
+function extractExternalLinksFromRelations(
+  rels: MusicBrainzRelation[],
+): ExternalLinks {
+  const links: ExternalLinks = {};
+
+  for (const rel of rels) {
+    const url = extractRelationUrl(rel);
+    if (!url) continue;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      continue;
+    }
+
+    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+    if (host.endsWith("wikipedia.org")) {
+      if (!links.wikipedia) links.wikipedia = url;
+      continue;
+    }
+    if (host.endsWith("discogs.com")) {
+      if (!links.discogs) links.discogs = url;
+      continue;
+    }
+    if (host === "open.spotify.com" && isExactSpotifyUrl(parsed)) {
+      links.spotifySearch = url;
+      continue;
+    }
+    if (host === "music.apple.com" && isExactAppleMusicUrl(parsed)) {
+      links.appleMusicSearch = url;
+    }
+  }
+
+  return links;
+}
+
 function collectWorkRelations(
   raw: MusicBrainzRecording,
   release?: MusicBrainzRelease | null,
@@ -490,6 +569,7 @@ function mergeNormalized(
     artist: mergeString(base.artist, ai.artist) || base.artist || "",
     coverArtUrl: base.coverArtUrl ?? null,
     coverArtThumbUrl: base.coverArtThumbUrl ?? null,
+    links: base.links,
     release: {
       title: mergeString(base.release.title, ai.release?.title) || null,
       date: mergeString(base.release.date, ai.release?.date) || null,
@@ -783,8 +863,18 @@ export async function normalizeRecording(
   },
 ): Promise<NormalizedRecording> {
   const derived = deriveRecordingFromMB(raw, opts?.release, opts?.releaseGroup);
+  const searchLinks = buildSearchLinks(derived.title ?? "", derived.artist ?? "");
+  const relationLinks = extractExternalLinksFromRelations(
+    derived._rawRelations ?? [],
+  );
 
-  let base = derived;
+  let base: NormalizedRecording = {
+    ...derived,
+    links: {
+      ...searchLinks,
+      ...relationLinks,
+    },
+  };
   let wikiPersonnel: { name: string; role: string }[] = [];
 
   if (opts?.allowExternal !== false) {

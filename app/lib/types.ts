@@ -1,8 +1,16 @@
+export type ExternalLinks = {
+  spotifySearch?: string;
+  appleMusicSearch?: string;
+  wikipedia?: string;
+  discogs?: string;
+};
+
 export interface NormalizedRecording {
   title: string;
   artist: string;
   coverArtUrl?: string | null;
   coverArtThumbUrl?: string | null;
+  links?: ExternalLinks;
   release: {
     title: string | null;
     date: string | null;

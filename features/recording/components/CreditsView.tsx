@@ -1,7 +1,9 @@
 import { useRouter } from "next/router";
+import { Star } from "lucide-react";
 
 import type { NormalizedRecording } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { useFavorites } from "@/hooks/useFavorites";
 import { RecordSpinner } from "@components/record-spinner";
 import { Button } from "@components/ui/button";
 import buildCreditsViewModel from "./credits/viewModel";
@@ -25,12 +27,52 @@ export default function CreditsView({
   recordingId?: string;
 }) {
   const router = useRouter();
+  const { isFavorited, addFavorite, removeFavorite } = useFavorites();
   // Pass the full data object so viewModel can access _rawRelations for MBID extraction
   const vm = buildCreditsViewModel(data);
 
   const backText = fromContributor
     ? `Back to ${fromContributor}`
     : "Back";
+
+  const listenLinks = data
+    ? [
+        {
+          label: "Spotify",
+          href: data.links?.spotifySearch,
+          iconSrc: "/assets/Spotify_Primary_Logo_RGB_Green.png",
+        },
+        {
+          label: "Apple Music",
+          href: data.links?.appleMusicSearch,
+          iconSrc: "/assets/Icon.jpeg",
+        },
+      ].filter((link): link is { label: string; href: string; iconSrc: string } =>
+        Boolean(link.href),
+      )
+    : [];
+
+  const handleFavoriteToggle = async () => {
+    if (!data?.identifiers?.mbid) return;
+    const payload = {
+      entityType: "recording" as const,
+      entityId: data.identifiers.mbid,
+      title: data.title,
+      artist: data.artist,
+    };
+
+    const currentlyFavorited = isFavorited(payload.entityType, payload.entityId);
+    const ok = currentlyFavorited
+      ? await removeFavorite(payload)
+      : await addFavorite(payload);
+
+    if (!ok && typeof window !== "undefined") {
+      const confirmSignIn = window.confirm("Sign in to save favorites?");
+      if (confirmSignIn) {
+        window.location.href = "/api/auth/signin";
+      }
+    }
+  };
 
   const handleBack = () => {
     // Use router.back() to properly sync with browser history
@@ -81,14 +123,44 @@ export default function CreditsView({
               ) : null}
 
               <div className="min-w-0 space-y-2">
-                <h1
-                  className={cn(
-                    "text-2xl font-semibold tracking-tight",
-                    "text-primary",
-                  )}
-                >
-                  {data.title}
-                </h1>
+                <div className="flex items-start gap-2">
+                  <h1
+                    className={cn(
+                      "text-2xl font-semibold tracking-tight",
+                      "text-primary",
+                    )}
+                  >
+                    {data.title}
+                  </h1>
+                  {data.identifiers?.mbid ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={handleFavoriteToggle}
+                      aria-pressed={isFavorited("recording", data.identifiers.mbid)}
+                      title={
+                        isFavorited("recording", data.identifiers.mbid)
+                          ? "Remove from favorites"
+                          : "Add to favorites"
+                      }
+                    >
+                      <Star
+                        className={cn(
+                          "h-5 w-5",
+                          isFavorited("recording", data.identifiers.mbid)
+                            ? "text-yellow-500"
+                            : "text-muted-foreground",
+                        )}
+                        fill={
+                          isFavorited("recording", data.identifiers.mbid)
+                            ? "currentColor"
+                            : "none"
+                        }
+                      />
+                    </Button>
+                  ) : null}
+                </div>
                 <div className={cn(text.body, "text-muted-foreground")}>
                   {data.artist}
                 </div>
@@ -96,6 +168,41 @@ export default function CreditsView({
                   {data.release?.title ? `${data.release.title}` : ""}
                   {data.release?.date ? ` — ${data.release.date}` : ""}
                 </div>
+                {listenLinks.length ? (
+                  <div
+                    className={cn(
+                      text.meta,
+                      "flex flex-wrap items-center gap-2 text-muted-foreground",
+                    )}
+                  >
+                    <span className="font-medium">Listen on</span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {listenLinks.map((link, index) => (
+                        <span key={link.label} className="flex items-center gap-2">
+                          <a
+                            href={link.href}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex h-6 w-6 items-center justify-center rounded hover:bg-muted/60"
+                            aria-label={link.label}
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={link.iconSrc}
+                              alt={link.label}
+                              width={20}
+                              height={20}
+                              className="h-5 w-5 object-contain"
+                            />
+                          </a>
+                          {index < listenLinks.length - 1 ? (
+                            <span aria-hidden="true">·</span>
+                          ) : null}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           </section>

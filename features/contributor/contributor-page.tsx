@@ -1,9 +1,10 @@
 import * as React from "react";
 import { useRouter } from "next/router";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Star } from "lucide-react";
 
 import type { ContributorProfile } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { useFavorites } from "@/hooks/useFavorites";
 import { AppLayout } from "@components/layout/app-layout";
 import { RecordSpinner } from "@components/record-spinner";
 import { Button } from "@components/ui/button";
@@ -38,6 +39,7 @@ function setCachedData(key: string, data: ContributorProfile): void {
 export function ContributorPage() {
   const router = useRouter();
   const { name, mbid, from_song, from_artist, from_roles, from_recording_id } = router.query;
+  const { isFavorited, addFavorite, removeFavorite } = useFavorites();
 
   const [data, setData] = React.useState<ContributorProfile | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -172,6 +174,29 @@ export function ContributorPage() {
     router.back();
   };
 
+  const handleFavoriteToggle = async () => {
+    if (typeof mbid !== "string" || !mbid) return;
+    if (!data) return;
+    const payload = {
+      entityType: "contributor" as const,
+      entityId: mbid,
+      title: data.name,
+      artist: null,
+    };
+
+    const currentlyFavorited = isFavorited(payload.entityType, payload.entityId);
+    const ok = currentlyFavorited
+      ? await removeFavorite(payload)
+      : await addFavorite(payload);
+
+    if (!ok && typeof window !== "undefined") {
+      const confirmSignIn = window.confirm("Sign in to save favorites?");
+      if (confirmSignIn) {
+        window.location.href = "/api/auth/signin";
+      }
+    }
+  };
+
   const handleRecordingClick = (recordingId: string, title: string, artist: string) => {
     // If this is an AI-inferred recording (not a real MusicBrainz ID), search for it instead
     if (recordingId.startsWith('ai-')) {
@@ -248,22 +273,52 @@ export function ContributorPage() {
           </Button>
 
           <div>
-            <h1 className={text.pageTitle}>
-              {data.name}
-              {data.roleBreakdown && data.roleBreakdown.length > 0 && (
-                <>
-                  <span className="text-muted-foreground font-normal text-2xl mx-3">•</span>
-                  <span className="text-muted-foreground font-normal text-2xl">
-                    {data.roleBreakdown
-                      .filter(r => r.role.toLowerCase() !== 'performer')
-                      .slice(0, 3)
-                      .map(r => r.role)
-                      .join(", ") ||
-                    data.roleBreakdown[0]?.role}
-                  </span>
-                </>
-              )}
-            </h1>
+            <div className="flex items-start gap-2">
+              <h1 className={text.pageTitle}>
+                {data.name}
+                {data.roleBreakdown && data.roleBreakdown.length > 0 && (
+                  <>
+                    <span className="text-muted-foreground font-normal text-2xl mx-3">•</span>
+                    <span className="text-muted-foreground font-normal text-2xl">
+                      {data.roleBreakdown
+                        .filter(r => r.role.toLowerCase() !== 'performer')
+                        .slice(0, 3)
+                        .map(r => r.role)
+                        .join(", ") ||
+                      data.roleBreakdown[0]?.role}
+                    </span>
+                  </>
+                )}
+              </h1>
+              {typeof mbid === "string" && mbid ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleFavoriteToggle}
+                  aria-pressed={isFavorited("contributor", mbid)}
+                  title={
+                    isFavorited("contributor", mbid)
+                      ? "Remove from favorites"
+                      : "Add to favorites"
+                  }
+                >
+                  <Star
+                    className={cn(
+                      "h-5 w-5",
+                      isFavorited("contributor", mbid)
+                        ? "text-yellow-500"
+                        : "text-muted-foreground",
+                    )}
+                    fill={
+                      isFavorited("contributor", mbid)
+                        ? "currentColor"
+                        : "none"
+                    }
+                  />
+                </Button>
+              ) : null}
+            </div>
             <div className={text.meta}>
               {data.totalContributions} contribution
               {data.totalContributions !== 1 ? "s" : ""} across{" "}
