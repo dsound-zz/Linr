@@ -125,7 +125,7 @@ export function libsqlAdapter(): Adapter {
     },
     async linkAccount(account: AdapterAccount) {
       await ready;
-      const id = account.id ?? crypto.randomUUID();
+      const id = toString(account.id) ?? crypto.randomUUID();
       await db.execute({
         sql: `
           insert into accounts (
@@ -147,8 +147,8 @@ export function libsqlAdapter(): Adapter {
           account.scope ?? null,
           account.id_token ?? null,
           account.session_state ?? null,
-          account.oauth_token_secret ?? null,
-          account.oauth_token ?? null,
+          toString(account.oauth_token_secret),
+          toString(account.oauth_token),
         ],
       });
       return null;

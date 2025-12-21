@@ -11,6 +11,7 @@ import type {
   MusicBrainzRecording,
   MusicBrainzRelease,
   MusicBrainzArtistCreditEntry,
+  MusicBrainzRelation,
 } from "./types";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -19,29 +20,6 @@ const client = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 type MutableCredits = NormalizedRecording["credits"];
 type MutableLocations = NormalizedRecording["locations"];
-
-interface MusicBrainzRelation {
-  type?: string;
-  attributes?: string[];
-  artist?: { name?: string };
-  name?: string;
-  target?: { name?: string };
-  "target-credit"?: string;
-  place?: {
-    name?: string;
-    area?: {
-      name?: string;
-      "iso-3166-1-codes"?: string[];
-      iso_3166_1_codes?: string[];
-    };
-  };
-  work?: {
-    relations?: MusicBrainzRelation[];
-    [key: string]: unknown;
-  };
-  relations?: MusicBrainzRelation[];
-  [key: string]: unknown; // For dynamic keys like "*-relation-list"
-}
 
 interface MusicBrainzWork {
   relations?: MusicBrainzRelation[];

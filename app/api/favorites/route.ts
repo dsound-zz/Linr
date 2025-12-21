@@ -55,8 +55,8 @@ export async function POST(req: Request) {
     | {
         entityType?: FavoriteEntityType;
         entityId?: string;
-        title?: string;
-        artist?: string;
+        title?: string | null;
+        artist?: string | null;
       }
     | null;
 

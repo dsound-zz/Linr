@@ -1,7 +1,7 @@
 import { createClient, type Client } from "@libsql/client";
 
-const url = process.env.TURSO_DATABASE_URL;
-if (!url) {
+const databaseUrl = process.env.TURSO_DATABASE_URL ?? "";
+if (!databaseUrl) {
   throw new Error("Missing TURSO_DATABASE_URL");
 }
 
@@ -11,7 +11,7 @@ let client: Client | null = null;
 
 export function getDb(): Client {
   if (!client) {
-    client = createClient({ url, authToken });
+    client = createClient({ url: databaseUrl, authToken });
   }
   return client;
 }

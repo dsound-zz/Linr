@@ -201,7 +201,11 @@ export interface MusicBrainzRelation {
       iso_3166_1_codes?: string[];
     };
   };
-  work?: unknown;
+  work?: {
+    relations?: MusicBrainzRelation[];
+    [key: string]: unknown;
+  };
+  relations?: MusicBrainzRelation[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }

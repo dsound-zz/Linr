@@ -16,6 +16,20 @@ type ProfileUser = {
   image: string | null;
 };
 
+type ProfileUserUpdate = Partial<ProfileUser> & { id: string };
+
+function mergeProfileUser(
+  prev: ProfileUser | null,
+  next: ProfileUserUpdate,
+): ProfileUser {
+  return {
+    id: next.id,
+    name: next.name ?? prev?.name ?? null,
+    email: next.email ?? prev?.email ?? null,
+    image: next.image ?? prev?.image ?? null,
+  };
+}
+
 export default function ProfilePage() {
   const { data: session, status } = useSession();
   const { favorites, isLoading, removeFavorite } = useFavorites();
@@ -63,8 +77,11 @@ export default function ProfilePage() {
         body: JSON.stringify({ name: name.trim() || null, image: image.trim() || null }),
       });
       if (!res.ok) throw new Error("Failed to save profile");
-      const json = (await res.json()) as { user?: ProfileUser };
-      if (json.user) setUser((prev) => ({ ...(prev ?? json.user), ...json.user }));
+      const json = (await res.json()) as { user?: ProfileUserUpdate };
+      const updatedUser = json.user;
+      if (updatedUser) {
+        setUser((prev) => mergeProfileUser(prev, updatedUser));
+      }
       setSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save profile");

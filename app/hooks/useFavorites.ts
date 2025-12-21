@@ -17,8 +17,8 @@ export type Favorite = {
 type FavoritePayload = {
   entityType: FavoriteEntityType;
   entityId: string;
-  title?: string;
-  artist?: string;
+  title?: string | null;
+  artist?: string | null;
 };
 
 type RemovePayload = {
