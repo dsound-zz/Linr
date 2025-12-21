@@ -1,5 +1,6 @@
 import type {
   Adapter,
+  AdapterAccount,
   AdapterSession,
   AdapterUser,
   VerificationToken,
@@ -122,7 +123,7 @@ export function libsqlAdapter(): Adapter {
       });
       return updated;
     },
-    async linkAccount(account) {
+    async linkAccount(account: AdapterAccount) {
       await ready;
       const id = account.id ?? crypto.randomUUID();
       await db.execute({
