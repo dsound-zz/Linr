@@ -57,7 +57,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       </main>
       <footer className="border-t-2 border-border bg-card/40">
         <div className="mx-auto w-full max-w-3xl px-4 py-4 text-xs text-muted-foreground">
-          Built with MusicBrainz, Wikipedia, Discogs, OpenAI and Human Judgement{" "}
+          Built with MusicBrainz, Wikipedia, Discogs, Qwen and Human Judgement{" "}
           <a
             href="https://www.demiansims.com"
             target="_blank"
