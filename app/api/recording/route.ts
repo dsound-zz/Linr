@@ -248,7 +248,7 @@ export async function GET(req: Request) {
         base: typeof clean.credits.performers,
         incoming: typeof clean.credits.performers,
       ) => {
-        const seen = new Set(base.map((p) => `${p.name}::${p.role}`));
+        const seen = new Set(base.map((p: {name: string, role: string}) => `${p.name}::${p.role}`));
         const out = [...base];
         for (const p of incoming) {
           const k = `${p.name}::${p.role}`;

@@ -7,7 +7,22 @@ const client = new OpenAI({
   apiKey: OPENROUTER_API_KEY,
 });
 
-export const processRecordingWithAI = async (mbData: any) => {
+export interface ProcessedRecording {
+  title: string;
+  artists: string[];
+  duration: number;
+  isrc?: string;
+  credits?: {
+    performers: Array<{name: string, role: string}>;
+  };
+  recordings: Array<{
+    title: string;
+    artist: string;
+    duration: number;
+  }>;
+}
+
+export const processRecordingWithAI = async (mbData: any): Promise<ProcessedRecording> => {
   const client = new OpenAI({
     baseURL: 'https://openrouter.ai/api/v1',
     apiKey: process.env.OPENROUTER_API_KEY!,
