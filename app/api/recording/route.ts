@@ -4,6 +4,7 @@ import {
     lookupRelease,
     lookupReleaseGroup,
 } from "@/lib/musicbrainz";
+import { normalizeRecording } from "@/lib/search/normalize";
 import { processRecordingWithAI } from "@/lib/openrouter";
 import { logCreditsResponse } from "@/lib/logger";
 import { cacheKeyRecording, getCached, setCached } from "@/lib/search/cache";
@@ -228,6 +229,15 @@ export async function GET(req: Request) {
         : null);
 
     const clean = await normalizeRecording(raw, {
+      release,
+      releaseGroup,
+      allowAI,
+      allowInferred,
+      allowExternal,
+      release,
+      releaseGroup,
+      release,
+      releaseGroup,{
       release,
       releaseGroup,
       allowAI,

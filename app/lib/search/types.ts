@@ -13,6 +13,12 @@ export interface NormalizedRecording {
   title: string;
   artist: string;
   releases: ReleaseInfo[];
+  credits: {
+    performers: any[];
+    producers: any[];
+    writers: any[];
+  };
+  release: any | null;
   lengthMs: number | null;
   score: number | null; // MusicBrainz search score
   source?:
@@ -20,6 +26,7 @@ export interface NormalizedRecording {
     | "musicbrainz"
     | "album-title-inferred"
     | "wikipedia-inferred"; // Origin of the recording
+  fromObviousSongProbe?: true;
 }
 
 export interface ReleaseInfo {
