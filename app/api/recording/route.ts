@@ -4,7 +4,7 @@ import {
     lookupRelease,
     lookupReleaseGroup,
 } from "@/lib/musicbrainz";
-import { deriveRecordingFromMB, normalizeRecording } from "@/lib/openai";
+import { processRecordingWithAI } from "@/lib/openrouter";
 import { logCreditsResponse } from "@/lib/logger";
 import { cacheKeyRecording, getCached, setCached } from "@/lib/search/cache";
 import { searchByTitleAndArtist } from "@/lib/search/search";
@@ -291,7 +291,7 @@ export async function GET(req: Request) {
               const altRaw = await lookupRecording(candidate.id);
               if (!altRaw) continue;
 
-              const altDerived = deriveRecordingFromMB(altRaw, null, null);
+              const altDerived = await processRecordingWithAI(altRaw);
               if (altDerived.credits.performers?.length) {
                 merged = mergePerformers(merged, altDerived.credits.performers);
               }
