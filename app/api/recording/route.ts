@@ -292,8 +292,8 @@ export async function GET(req: Request) {
               if (!altRaw) continue;
 
               const altDerived = await processRecordingWithAI(altRaw);
-              if (altDerived.credits.performers?.length) {
-                merged = mergePerformers(merged, altDerived.credits.performers);
+              if (altDerived.credits?.performers?.length) {
+                merged = mergePerformers(merged, altDerived.credits.performers!);
               }
 
               // Early exit if we've reached our threshold
